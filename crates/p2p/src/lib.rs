@@ -8,6 +8,7 @@
 pub mod channel;
 pub mod discovery;
 pub mod message;
+pub mod peer;
 pub mod sync;
 
 /// Default Tron p2p listen port (UDP discovery + TCP channel).
