@@ -89,6 +89,24 @@ pub fn apply_transaction<S: KvStore>(
             actuator.validate(state)?;
             actuator.execute(state)
         }
+        ContractType::AccountCreateContract => {
+            let c: protocol::AccountCreateContract = unpack(contract)?;
+            let actuator = crate::account::CreateAccountActuator::new(&c);
+            actuator.validate(state)?;
+            actuator.execute(state)
+        }
+        ContractType::AccountUpdateContract => {
+            let c: protocol::AccountUpdateContract = unpack(contract)?;
+            let actuator = crate::account::UpdateAccountActuator::new(&c);
+            actuator.validate(state)?;
+            actuator.execute(state)
+        }
+        ContractType::SetAccountIdContract => {
+            let c: protocol::SetAccountIdContract = unpack(contract)?;
+            let actuator = crate::account::SetAccountIdActuator::new(&c);
+            actuator.validate(state)?;
+            actuator.execute(state)
+        }
         other => Err(ActuatorError::Validate(format!(
             "unsupported contract type: {other:?}"
         ))),
@@ -190,7 +208,7 @@ mod tests {
     fn rejects_unsupported_contract_type() {
         let mut ws = WorldState::new(MemoryStore::new());
         let contract = protocol::transaction::Contract {
-            r#type: ContractType::AccountCreateContract as i32,
+            r#type: ContractType::WithdrawBalanceContract as i32,
             parameter: Some(prost_types::Any::default()),
             ..Default::default()
         };
