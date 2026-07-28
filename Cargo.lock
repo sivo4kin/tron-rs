@@ -1436,9 +1436,11 @@ dependencies = [
 name = "tron-actuators"
 version = "0.0.1"
 dependencies = [
+ "hex",
  "prost",
  "prost-types",
  "thiserror",
+ "tron-consensus",
  "tron-proto",
  "tron-state",
  "tron-storage",
