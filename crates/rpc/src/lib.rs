@@ -5,6 +5,7 @@
 //! `tron-proto` service stubs. Default ports mirror java-tron.
 
 pub mod http;
+pub mod server;
 
 /// Default HTTP fullnode port.
 pub const DEFAULT_HTTP_PORT: u16 = 8090;
