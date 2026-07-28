@@ -2048,6 +2048,7 @@ dependencies = [
  "serde_json",
  "tokio",
  "tron-chain",
+ "tron-consensus",
  "tron-proto",
  "tron-state",
  "tron-storage",

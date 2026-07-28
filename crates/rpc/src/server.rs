@@ -4,17 +4,55 @@
 //! to the pure handlers in [`crate::http`], over a shared read-only [`WorldState`].
 
 use crate::http;
+use axum::extract::FromRef;
 use axum::{extract::State, routing::post, Json, Router};
 use serde_json::Value;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
+use tron_consensus::mempool::Mempool;
 use tron_state::WorldState;
 use tron_storage::KvStore;
 
-/// Shared, read-only application state.
+/// Read-only world-state handle (most handlers use only this).
 pub type AppState<S> = Arc<WorldState<S>>;
 
-/// Build the router serving the currently-implemented endpoints.
-pub fn router<S: KvStore + 'static>(state: AppState<S>) -> Router {
+/// Shared node state: the world plus the pending-transaction mempool. Handlers
+/// extract whichever piece they need via [`FromRef`].
+pub struct NodeState<S: KvStore> {
+    pub world: Arc<WorldState<S>>,
+    pub mempool: Arc<Mutex<Mempool>>,
+}
+
+impl<S: KvStore> Clone for NodeState<S> {
+    fn clone(&self) -> Self {
+        Self { world: self.world.clone(), mempool: self.mempool.clone() }
+    }
+}
+
+impl<S: KvStore> NodeState<S> {
+    pub fn new(world: Arc<WorldState<S>>) -> Self {
+        Self { world, mempool: Arc::new(Mutex::new(Mempool::default())) }
+    }
+}
+
+impl<S: KvStore + 'static> FromRef<NodeState<S>> for Arc<WorldState<S>> {
+    fn from_ref(st: &NodeState<S>) -> Self {
+        st.world.clone()
+    }
+}
+
+impl<S: KvStore + 'static> FromRef<NodeState<S>> for Arc<Mutex<Mempool>> {
+    fn from_ref(st: &NodeState<S>) -> Self {
+        st.mempool.clone()
+    }
+}
+
+/// Build the router. Accepts either a bare world handle or a full [`NodeState`].
+pub fn router<S: KvStore + 'static>(world: AppState<S>) -> Router {
+    router_with_state(NodeState::new(world))
+}
+
+/// Build the router over an explicit [`NodeState`].
+pub fn router_with_state<S: KvStore + 'static>(state: NodeState<S>) -> Router {
     Router::new()
         .route("/wallet/getaccount", post(get_account::<S>))
         .route("/wallet/getnowblock", post(get_now_block::<S>))
@@ -98,8 +136,25 @@ async fn validate_address(Json(req): Json<Value>) -> Json<Value> {
     Json(http::validate_address(&req))
 }
 
-async fn broadcast_hex(Json(req): Json<Value>) -> Json<Value> {
-    Json(http::broadcast_hex(&req))
+async fn broadcast_hex(
+    State(mempool): State<Arc<Mutex<Mempool>>>,
+    Json(req): Json<Value>,
+) -> Json<Value> {
+    let result = http::broadcast_hex(&req);
+    // On a structurally-valid tx, admit it to the mempool.
+    if result.get("result").and_then(Value::as_bool) == Some(true) {
+        if let Some(hex_str) = req.get("transaction").and_then(Value::as_str) {
+            if let Ok(bytes) = hex::decode(hex_str.trim_start_matches("0x")) {
+                use prost::Message;
+                if let Ok(tx) = tron_proto::protocol::Transaction::decode(bytes.as_slice()) {
+                    if let Ok(mut pool) = mempool.lock() {
+                        pool.add(tx);
+                    }
+                }
+            }
+        }
+    }
+    Json(result)
 }
 
 /// Serve on `addr` until the process ends (blocks). Used by the node binary.
