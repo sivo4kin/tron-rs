@@ -438,6 +438,23 @@ pub fn get_delegated_resource_v2(_req: &Value) -> Value {
 }
 
 
+/// `POST /wallet/getaccountnet` — bandwidth (net) usage/limit for an account,
+/// derived from its bandwidth `frozen_v2` stake.
+pub fn get_account_net<S: KvStore>(state: &WorldState<S>, req: &Value) -> Value {
+    let net_staked = req.get("address").and_then(Value::as_str).and_then(parse_req_address)
+        .and_then(|a| state.get_account(&a).ok().flatten())
+        .map(|acc| acc.frozen_v2.iter().filter(|f| f.r#type == 0).map(|f| f.amount).sum::<i64>())
+        .unwrap_or(0);
+    json!({ "freeNetLimit": 600, "NetLimit": net_staked, "NetUsed": 0 })
+}
+
+/// `POST /wallet/listwitnesses` — the witness (SR) list (empty until the witness
+/// store is enumerated).
+pub fn list_witnesses() -> Value {
+    json!({ "witnesses": [] })
+}
+
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -753,5 +770,18 @@ mod tests {
         let other = Address::from_body([0x88; 20]);
         assert_eq!(get_available_unfreeze_count(&ws, &json!({ "owner_address": other.to_hex() }))["count"], 32);
         assert!(get_delegated_resource_v2(&json!({}))["delegatedResource"].as_array().unwrap().is_empty());
+    }
+
+    #[test]
+    fn account_net_and_list_witnesses() {
+        let mut ws = WorldState::new(MemoryStore::new());
+        let addr = Address::from_body([0x99; 20]);
+        ws.put_account(&addr, &protocol::Account {
+            address: addr.as_bytes().to_vec(),
+            frozen_v2: vec![protocol::account::FreezeV2 { r#type: 0, amount: 2_000_000 }],
+            ..Default::default()
+        }).unwrap();
+        assert_eq!(get_account_net(&ws, &json!({ "address": addr.to_hex() }))["NetLimit"], 2_000_000);
+        assert!(list_witnesses()["witnesses"].as_array().unwrap().is_empty());
     }
 }
