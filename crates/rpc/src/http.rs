@@ -137,6 +137,60 @@ pub fn get_block_by_latest_num<S: KvStore>(state: &WorldState<S>, req: &Value) -
 }
 
 
+/// Known chain-parameter keys surfaced by `getchainparameters` (subset; grows as
+/// the dynamic-property set is modeled).
+const CHAIN_PARAM_KEYS: &[&str] = &[
+    "getEnergyFee",
+    "getCreateAccountFee",
+    "getCreateNewAccountFeeInSystemContract",
+    "getWitnessPayPerBlock",
+    "getMaintenanceTimeInterval",
+];
+
+fn prop_for_param(key: &str) -> &str {
+    match key {
+        "getEnergyFee" => "ENERGY_FEE",
+        "getCreateAccountFee" => "CREATE_ACCOUNT_FEE",
+        "getCreateNewAccountFeeInSystemContract" => "CREATE_NEW_ACCOUNT_FEE_IN_SYSTEM_CONTRACT",
+        "getWitnessPayPerBlock" => "WITNESS_PAY_PER_BLOCK",
+        "getMaintenanceTimeInterval" => "MAINTENANCE_TIME_INTERVAL",
+        _ => key,
+    }
+}
+
+/// `POST /wallet/getchainparameters` — the committee-adjustable chain parameters
+/// as `{ "chainParameter": [ { "key": ..., "value": ... }, ... ] }`.
+pub fn get_chain_parameters<S: KvStore>(state: &WorldState<S>) -> Value {
+    let params: Vec<Value> = CHAIN_PARAM_KEYS
+        .iter()
+        .map(|k| {
+            let v = state.get_prop_i64(prop_for_param(k)).unwrap_or(0);
+            json!({ "key": k, "value": v })
+        })
+        .collect();
+    json!({ "chainParameter": params })
+}
+
+/// `POST /wallet/getnodeinfo` — static node identity/config (subset).
+pub fn get_node_info(network: &str, p2p_port: u16) -> Value {
+    json!({
+        "configNodeInfo": {
+            "codeVersion": env!("CARGO_PKG_VERSION"),
+            "p2pVersion": network,
+            "listenPort": p2p_port,
+        },
+        "solidityBlock": "",
+        "activeConnectCount": 0,
+    })
+}
+
+/// `POST /wallet/listnodes` — discovered peers (empty until the discovery table
+/// is populated by the live channel).
+pub fn list_nodes() -> Value {
+    json!({ "nodes": [] })
+}
+
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -243,5 +297,26 @@ mod tests {
         assert_eq!(blocks.len(), 3);
         assert_eq!(blocks[0]["block_header"]["raw_data"]["number"], 3);
         assert_eq!(blocks[2]["block_header"]["raw_data"]["number"], 5);
+    }
+
+    #[test]
+    fn chain_parameters_reads_dynamic_props() {
+        let mut ws = WorldState::new(MemoryStore::new());
+        ws.put_prop_i64("ENERGY_FEE", 140).unwrap();
+        let resp = get_chain_parameters(&ws);
+        let params = resp["chainParameter"].as_array().unwrap();
+        let energy = params.iter().find(|p| p["key"] == "getEnergyFee").unwrap();
+        assert_eq!(energy["value"], 140);
+        // an unset param reads 0
+        let ca = params.iter().find(|p| p["key"] == "getCreateAccountFee").unwrap();
+        assert_eq!(ca["value"], 0);
+    }
+
+    #[test]
+    fn node_info_and_list_nodes_shape() {
+        let info = get_node_info("nile", 18888);
+        assert_eq!(info["configNodeInfo"]["listenPort"], 18888);
+        assert!(info["configNodeInfo"]["codeVersion"].is_string());
+        assert_eq!(list_nodes()["nodes"].as_array().unwrap().len(), 0);
     }
 }

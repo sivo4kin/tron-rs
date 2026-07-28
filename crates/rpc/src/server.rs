@@ -20,6 +20,9 @@ pub fn router<S: KvStore + 'static>(state: AppState<S>) -> Router {
         .route("/wallet/getnowblock", post(get_now_block::<S>))
         .route("/wallet/getblockbynum", post(get_block_by_num::<S>))
         .route("/wallet/getblockbylatestnum", post(get_block_by_latest_num::<S>))
+        .route("/wallet/getchainparameters", post(get_chain_parameters::<S>))
+        .route("/wallet/getnodeinfo", post(get_node_info))
+        .route("/wallet/listnodes", post(list_nodes))
         .route("/wallet/validateaddress", post(validate_address))
         .with_state(state)
 }
@@ -47,6 +50,23 @@ async fn get_block_by_latest_num<S: KvStore>(
     Json(req): Json<Value>,
 ) -> Json<Value> {
     Json(http::get_block_by_latest_num(&state, &req))
+}
+
+async fn get_chain_parameters<S: KvStore>(State(state): State<AppState<S>>) -> Json<Value> {
+    Json(http::get_chain_parameters(&state))
+}
+
+async fn get_node_info<S: KvStore>(State(_state): State<AppState<S>>) -> Json<Value> {
+    // Config context isn't threaded into the router yet; report defaults.
+    Json(http::get_node_info("nile", tron_p2p_port()))
+}
+
+fn tron_p2p_port() -> u16 {
+    18888
+}
+
+async fn list_nodes<S: KvStore>(State(_state): State<AppState<S>>) -> Json<Value> {
+    Json(http::list_nodes())
 }
 
 async fn validate_address(Json(req): Json<Value>) -> Json<Value> {
