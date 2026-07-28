@@ -29,5 +29,10 @@ serde.workspace = true
 toml.workspace = true
 anyhow.workspace = true
 
+[features]
+default = []
+# Persistent state via RocksDB (java-tron JDK17-profile direction).
+rocksdb = ["tron-storage/rocksdb"]
+
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util"] }

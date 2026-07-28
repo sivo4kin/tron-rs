@@ -7,7 +7,13 @@ use tron_node::{Config, Node};
 #[tokio::test]
 async fn boots_and_shuts_down_cleanly() {
     let shutdown = CancellationToken::new();
-    let node = Node::new(Config::default());
+    // Unique temp data_dir so the rocksdb-feature build does not write into the repo.
+    let mut config = Config::default();
+    config.data_dir = std::env::temp_dir()
+        .join(format!("tron-rs-boot-{}", std::process::id()))
+        .to_string_lossy()
+        .into_owned();
+    let node = Node::new(config);
 
     let run_token = shutdown.clone();
     let handle = tokio::spawn(async move { node.run(run_token).await });

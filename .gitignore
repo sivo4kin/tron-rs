@@ -5,3 +5,4 @@ target/
 .claude/
 .swarm/
 .hive-mind/
+data/

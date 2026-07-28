@@ -59,6 +59,28 @@ impl Node {
         &self.config
     }
 
+    /// Open the world state backing store per build features:
+    /// with `rocksdb`, a persistent [`tron_storage::RocksStore`] under
+    /// `data_dir/state`; otherwise an in-memory store (tests / early phases).
+    #[cfg(feature = "rocksdb")]
+    pub fn open_state(
+        &self,
+    ) -> anyhow::Result<tron_state::WorldState<tron_storage::RocksStore>> {
+        let path = std::path::Path::new(&self.config.data_dir).join("state");
+        let db = tron_storage::RocksStore::open(&path)
+            .map_err(|e| anyhow::anyhow!("open state db at {}: {e}", path.display()))?;
+        tracing::info!(path = %path.display(), "state db opened (rocksdb)");
+        Ok(tron_state::WorldState::new(db))
+    }
+
+    #[cfg(not(feature = "rocksdb"))]
+    pub fn open_state(
+        &self,
+    ) -> anyhow::Result<tron_state::WorldState<tron_storage::MemoryStore>> {
+        tracing::info!("state db opened (in-memory; build with --features rocksdb to persist)");
+        Ok(tron_state::WorldState::new(tron_storage::MemoryStore::new()))
+    }
+
     /// Start all services and run until `shutdown` is cancelled, then stop cleanly.
     ///
     /// Returns once every service has drained. In P0 the services are placeholders
@@ -69,6 +91,7 @@ impl Node {
             data_dir = %self.config.data_dir,
             "tron-rs node starting"
         );
+        let _state = self.open_state()?;
 
         // Placeholder service set — replaced by real subsystems in later phases.
         let services = ["p2p", "consensus", "rpc"];
