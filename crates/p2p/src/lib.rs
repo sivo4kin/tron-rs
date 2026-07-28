@@ -5,6 +5,9 @@
 //! `services/discovery` and `services/channel` are the protocol reference; the
 //! fork-choice/finality integration they lacked is first-class here.
 
+pub mod message;
+pub mod sync;
+
 /// Default Tron p2p listen port (UDP discovery + TCP channel).
 pub const DEFAULT_P2P_PORT: u16 = 18888;
 
