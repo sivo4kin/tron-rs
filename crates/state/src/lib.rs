@@ -8,6 +8,8 @@
 //!
 //! Encodings are guarded by the differential harness (SPEC section 7).
 
+pub mod genesis;
+
 use prost::Message;
 use thiserror::Error;
 use tron_proto::protocol;
