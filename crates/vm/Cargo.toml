@@ -8,3 +8,4 @@ authors.workspace = true
 [dependencies]
 tron-types.workspace = true
 thiserror.workspace = true
+primitive-types.workspace = true
