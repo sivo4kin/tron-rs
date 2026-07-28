@@ -82,6 +82,28 @@ pub fn block_id_of(block: &protocol::Block) -> Option<H256> {
     Some(block_id(raw.number, &block_hash(block)?))
 }
 
+/// Recover the block producer's address from the header's witness signature.
+///
+/// java-tron (`BlockCapsule.validateSignature`): the witness signs the raw-header
+/// hash (`sha256(blockHeader.rawData)`); the 65-byte signature is `r ‖ s ‖ v`
+/// with `v` either the raw recovery id (0..=3) or Ethereum-style `27 + recid`.
+/// The recovered public key's Tron address must equal `raw_data.witness_address`.
+pub fn recover_witness(block: &protocol::Block) -> Option<tron_types::Address> {
+    let header = block.block_header.as_ref()?;
+    let sig = &header.witness_signature;
+    if sig.len() != 65 {
+        return None;
+    }
+    let digest = block_hash(block)?.0;
+    let mut rs = [0u8; 64];
+    rs.copy_from_slice(&sig[..64]);
+    let v = sig[64];
+    let recovery_id = if v >= 27 { v - 27 } else { v };
+    let recoverable = tron_crypto::RecoverableSignature { rs, recovery_id };
+    let pubkey = tron_crypto::recover(&digest, &recoverable).ok()?;
+    Some(tron_crypto::address_from_public_key(&pubkey))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

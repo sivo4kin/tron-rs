@@ -38,7 +38,15 @@ async fn main() -> anyhow::Result<()> {
             Some(r) => (r.number, block.transactions.len()),
             None => anyhow::bail!("block {num}: empty response (no header)"),
         };
-        let path = format!("{out_dir}/nile-{height}.pb");
+        // Name fixtures by network, inferred from the endpoint host.
+        let network = if endpoint.contains("nile") {
+            "nile"
+        } else if endpoint.contains("shasta") {
+            "shasta"
+        } else {
+            "mainnet"
+        };
+        let path = format!("{out_dir}/{network}-{height}.pb");
         std::fs::write(&path, block.encode_to_vec())?;
         println!("captured block {height} ({tx_count} txs) -> {path}");
     }

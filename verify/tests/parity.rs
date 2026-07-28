@@ -55,6 +55,34 @@ fn block_id_embeds_height_and_hash() {
 }
 
 #[test]
+fn witness_signature_recovers_to_header_address() {
+    // TronGrid's Nile gateway strips witness_signature from served blocks (the
+    // mainnet gateway does not), so only signature-bearing fixtures are checked —
+    // and at least one such fixture must exist so this test can't silently pass.
+    let mut checked = 0;
+    for name in tron_verify::fixture_names().unwrap() {
+        let block = tron_verify::load_block(&name).unwrap();
+        let has_sig = block
+            .block_header
+            .as_ref()
+            .is_some_and(|h| h.witness_signature.len() == 65);
+        if !has_sig {
+            continue;
+        }
+        let raw = block.block_header.as_ref().unwrap().raw_data.as_ref().unwrap();
+        let recovered = tron_chain::recover_witness(&block)
+            .unwrap_or_else(|| panic!("signature present but unrecoverable in {name}"));
+        assert_eq!(
+            hex::encode(recovered.as_bytes()),
+            hex::encode(&raw.witness_address),
+            "recovered producer address mismatch on {name}"
+        );
+        checked += 1;
+    }
+    assert!(checked > 0, "no signature-bearing fixture — capture a mainnet block");
+}
+
+#[test]
 fn tx_ids_are_nonzero_and_unique() {
     for name in tron_verify::fixture_names().unwrap() {
         let block = tron_verify::load_block(&name).unwrap();
