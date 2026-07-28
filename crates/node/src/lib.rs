@@ -20,6 +20,9 @@ pub struct Config {
     pub p2p_port: u16,
     pub http_port: u16,
     pub grpc_port: u16,
+    /// Seed peers to bootstrap sync from, as `"host:port"` strings.
+    #[serde(default)]
+    pub seed_nodes: Vec<String>,
 }
 
 impl Default for Config {
@@ -30,7 +33,24 @@ impl Default for Config {
             p2p_port: tron_p2p::DEFAULT_P2P_PORT,
             http_port: tron_rpc::DEFAULT_HTTP_PORT,
             grpc_port: tron_rpc::DEFAULT_GRPC_PORT,
+            seed_nodes: Vec::new(),
         }
+    }
+}
+
+impl Config {
+    /// Build a [`PeerManager`](tron_p2p::peer::PeerManager) seeded from
+    /// `seed_nodes` (head unknown = -1 until the peer advertises one).
+    pub fn seeded_peers(&self) -> tron_p2p::peer::PeerManager {
+        let mut pm = tron_p2p::peer::PeerManager::new();
+        for (i, node) in self.seed_nodes.iter().enumerate() {
+            if let Some((host, port)) = node.rsplit_once(':') {
+                if let Ok(port) = port.parse::<u16>() {
+                    pm.upsert(tron_p2p::PeerAddr::new(host, port), -1, i as u64);
+                }
+            }
+        }
+        pm
     }
 }
 
@@ -152,5 +172,16 @@ mod tests {
         assert_eq!(c.network, "nile");
         assert_eq!(c.p2p_port, 18888);
         assert_eq!(c.http_port, 8090);
+        assert!(c.seed_nodes.is_empty());
+    }
+
+    #[test]
+    fn seeded_peers_from_config() {
+        let mut c = Config::default();
+        c.seed_nodes = vec!["1.2.3.4:18888".into(), "5.6.7.8:18889".into(), "bad".into()];
+        let pm = c.seeded_peers();
+        assert_eq!(pm.len(), 2); // the malformed entry is skipped
+        // no peer has an advertised head yet (-1), so none is a sync target
+        assert!(pm.best_sync_target(-1).is_none());
     }
 }
