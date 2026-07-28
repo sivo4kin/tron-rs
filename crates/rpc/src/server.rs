@@ -56,6 +56,8 @@ pub fn router_with_state<S: KvStore + 'static>(state: NodeState<S>) -> Router {
     Router::new()
         .route("/wallet/getaccount", post(get_account::<S>))
         .route("/wallet/getaccountresource", post(get_account_resource::<S>))
+        .route("/wallet/getReward", post(get_reward::<S>))
+        .route("/wallet/getBrokerage", post(get_brokerage::<S>))
         .route("/wallet/getnowblock", post(get_now_block::<S>))
         .route("/wallet/getblockbynum", post(get_block_by_num::<S>))
         .route("/wallet/getblockbylatestnum", post(get_block_by_latest_num::<S>))
@@ -80,6 +82,14 @@ async fn get_account<S: KvStore>(
     Json(req): Json<Value>,
 ) -> Json<Value> {
     Json(http::get_account(&state, &req))
+}
+
+async fn get_reward<S: KvStore>(State(state): State<AppState<S>>, Json(req): Json<Value>) -> Json<Value> {
+    Json(http::get_reward(&state, &req))
+}
+
+async fn get_brokerage<S: KvStore>(State(state): State<AppState<S>>, Json(req): Json<Value>) -> Json<Value> {
+    Json(http::get_brokerage(&state, &req))
 }
 
 async fn get_account_resource<S: KvStore>(State(state): State<AppState<S>>, Json(req): Json<Value>) -> Json<Value> {

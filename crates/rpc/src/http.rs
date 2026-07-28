@@ -351,6 +351,26 @@ pub fn total_transaction<S: KvStore>(state: &WorldState<S>) -> Value {
 }
 
 
+/// `POST /wallet/getReward` — body `{ "address": "..." }`. The account's claimable
+/// reward allowance (accrued mortgage), in sun.
+pub fn get_reward<S: KvStore>(state: &WorldState<S>, req: &Value) -> Value {
+    let addr = req.get("address").and_then(Value::as_str).and_then(parse_req_address);
+    let allowance = addr
+        .and_then(|a| state.get_account(&a).ok().flatten())
+        .map(|acc| acc.allowance)
+        .unwrap_or(0);
+    json!({ "reward": allowance })
+}
+
+/// `POST /wallet/getBrokerage` — a witness's brokerage percentage (default 20).
+pub fn get_brokerage<S: KvStore>(state: &WorldState<S>, req: &Value) -> Value {
+    let key_present = req.get("address").and_then(Value::as_str).is_some();
+    // Per-witness brokerage store isn't modeled yet; return the network default.
+    let _ = (state, key_present);
+    json!({ "brokerage": tron_consensus::reward::DEFAULT_BROKERAGE })
+}
+
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -612,5 +632,20 @@ mod tests {
         // defaults to 0 when unset
         let empty = WorldState::new(MemoryStore::new());
         assert_eq!(get_burn_trx(&empty)["amount"], 0);
+    }
+
+    #[test]
+    fn reward_and_brokerage_endpoints() {
+        let mut ws = WorldState::new(MemoryStore::new());
+        let addr = Address::from_body([0x55; 20]);
+        ws.put_account(&addr, &protocol::Account {
+            address: addr.as_bytes().to_vec(), allowance: 777, ..Default::default()
+        }).unwrap();
+        assert_eq!(get_reward(&ws, &json!({ "address": addr.to_hex() }))["reward"], 777);
+        // unknown account -> 0 reward
+        let other = Address::from_body([0x66; 20]);
+        assert_eq!(get_reward(&ws, &json!({ "address": other.to_hex() }))["reward"], 0);
+        // default brokerage 20
+        assert_eq!(get_brokerage(&ws, &json!({ "address": addr.to_hex() }))["brokerage"], 20);
     }
 }
