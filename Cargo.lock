@@ -2042,6 +2042,7 @@ version = "0.0.1"
 dependencies = [
  "axum",
  "hex",
+ "prost",
  "reqwest",
  "serde",
  "serde_json",

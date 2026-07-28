@@ -26,6 +26,7 @@ pub fn router<S: KvStore + 'static>(state: AppState<S>) -> Router {
         .route("/wallet/getnodeinfo", post(get_node_info))
         .route("/wallet/listnodes", post(list_nodes))
         .route("/wallet/validateaddress", post(validate_address))
+        .route("/wallet/broadcasthex", post(broadcast_hex))
         .with_state(state)
 }
 
@@ -87,6 +88,10 @@ async fn list_nodes<S: KvStore>(State(_state): State<AppState<S>>) -> Json<Value
 
 async fn validate_address(Json(req): Json<Value>) -> Json<Value> {
     Json(http::validate_address(&req))
+}
+
+async fn broadcast_hex(Json(req): Json<Value>) -> Json<Value> {
+    Json(http::broadcast_hex(&req))
 }
 
 /// Serve on `addr` until the process ends (blocks). Used by the node binary.
