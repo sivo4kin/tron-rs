@@ -109,6 +109,34 @@ pub fn get_block_by_num<S: KvStore>(state: &WorldState<S>, req: &Value) -> Value
     }
 }
 
+/// `POST /wallet/validateaddress` — body `{ "address": "..." }`.
+/// Returns `{ "result": bool, "message": "..." }` (java-tron address validation).
+pub fn validate_address(req: &Value) -> Value {
+    let addr_str = req.get("address").and_then(Value::as_str).unwrap_or("");
+    let ok = tron_types::Address::from_hex(addr_str).is_ok()
+        || tron_types::Address::from_base58check(addr_str).is_ok();
+    json!({
+        "result": ok,
+        "message": if ok { "Base58check or Hex string format error" } else { "Invalid address" }
+    })
+}
+
+/// `POST /wallet/getblockbylatestnum` — body `{ "num": n }`.
+/// Returns the latest `n` blocks (capped), newest-last, as a `{ "block": [...] }`.
+pub fn get_block_by_latest_num<S: KvStore>(state: &WorldState<S>, req: &Value) -> Value {
+    let n = req.get("num").and_then(Value::as_i64).unwrap_or(0).clamp(0, 100);
+    let head = state.get_prop_i64(tron_state::blocks::LATEST_BLOCK_NUMBER).unwrap_or(0);
+    let start = (head - n + 1).max(0);
+    let mut blocks = Vec::new();
+    for num in start..=head {
+        if let Ok(Some(b)) = state.get_block_by_num(num) {
+            blocks.push(block_to_json(&b));
+        }
+    }
+    json!({ "block": blocks })
+}
+
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -187,5 +215,33 @@ mod tests {
 
         assert_eq!(get_block_by_num(&ws, &json!({ "num": 99 })), json!({}));
         assert!(get_block_by_num(&ws, &json!({}))["Error"].is_string());
+    }
+
+    #[test]
+    fn validate_address_accepts_valid_rejects_junk() {
+        let a = Address::from_body([0x11; 20]);
+        assert_eq!(validate_address(&json!({ "address": a.to_hex() }))["result"], true);
+        assert_eq!(validate_address(&json!({ "address": a.to_base58check() }))["result"], true);
+        assert_eq!(validate_address(&json!({ "address": "garbage" }))["result"], false);
+        assert_eq!(validate_address(&json!({}))["result"], false);
+    }
+
+    #[test]
+    fn get_block_by_latest_num_returns_recent_blocks() {
+        let mut ws = WorldState::new(MemoryStore::new());
+        for n in 1..=5i64 {
+            ws.put_block(&protocol::Block {
+                block_header: Some(protocol::BlockHeader {
+                    raw_data: Some(protocol::block_header::Raw { number: n, ..Default::default() }),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }).unwrap();
+        }
+        let resp = get_block_by_latest_num(&ws, &json!({ "num": 3 }));
+        let blocks = resp["block"].as_array().unwrap();
+        assert_eq!(blocks.len(), 3);
+        assert_eq!(blocks[0]["block_header"]["raw_data"]["number"], 3);
+        assert_eq!(blocks[2]["block_header"]["raw_data"]["number"], 5);
     }
 }

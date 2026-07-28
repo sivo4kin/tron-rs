@@ -19,6 +19,8 @@ pub fn router<S: KvStore + 'static>(state: AppState<S>) -> Router {
         .route("/wallet/getaccount", post(get_account::<S>))
         .route("/wallet/getnowblock", post(get_now_block::<S>))
         .route("/wallet/getblockbynum", post(get_block_by_num::<S>))
+        .route("/wallet/getblockbylatestnum", post(get_block_by_latest_num::<S>))
+        .route("/wallet/validateaddress", post(validate_address))
         .with_state(state)
 }
 
@@ -38,6 +40,17 @@ async fn get_block_by_num<S: KvStore>(
     Json(req): Json<Value>,
 ) -> Json<Value> {
     Json(http::get_block_by_num(&state, &req))
+}
+
+async fn get_block_by_latest_num<S: KvStore>(
+    State(state): State<AppState<S>>,
+    Json(req): Json<Value>,
+) -> Json<Value> {
+    Json(http::get_block_by_latest_num(&state, &req))
+}
+
+async fn validate_address(Json(req): Json<Value>) -> Json<Value> {
+    Json(http::validate_address(&req))
 }
 
 /// Serve on `addr` until the process ends (blocks). Used by the node binary.
