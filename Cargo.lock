@@ -1274,6 +1274,8 @@ dependencies = [
 name = "tron-actuators"
 version = "0.0.1"
 dependencies = [
+ "prost",
+ "prost-types",
  "thiserror",
  "tron-proto",
  "tron-state",
