@@ -98,6 +98,18 @@ impl<S: KvStore> WorldState<S> {
         Ok(account)
     }
 
+    // -- contract code ----------------------------------------------------
+
+    /// Store deployed bytecode for a contract address (java-tron `CodeStore`).
+    pub fn put_code(&mut self, addr: &Address, code: &[u8]) -> Result<(), StateError> {
+        self.db.put(cf::CONTRACT_CODE, addr.as_bytes(), code).map_err(Into::into)
+    }
+
+    /// Fetch a contract's deployed bytecode (empty if none).
+    pub fn get_code(&self, addr: &Address) -> Result<Vec<u8>, StateError> {
+        Ok(self.db.get(cf::CONTRACT_CODE, addr.as_bytes())?.unwrap_or_default())
+    }
+
     // -- dynamic properties ----------------------------------------------
 
     pub fn get_prop_i64(&self, key: &str) -> Result<i64, StateError> {

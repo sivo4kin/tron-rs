@@ -155,6 +155,20 @@ pub fn apply_transaction<S: KvStore>(
             actuator.validate(state)?;
             actuator.execute(state)
         }
+        ContractType::TriggerSmartContract => {
+            let c: protocol::TriggerSmartContract = unpack(contract)?;
+            // Default per-tx energy ceiling; real limit derives from fee_limit/energy price (P2 follow-up).
+            let actuator =
+                crate::smart_contract::TriggerSmartContractActuator::new(&c, 10_000_000);
+            actuator.validate(state)?;
+            actuator.execute(state)
+        }
+        ContractType::CreateSmartContract => {
+            let c: protocol::CreateSmartContract = unpack(contract)?;
+            let actuator = crate::smart_contract::CreateSmartContractActuator::new(&c);
+            actuator.validate(state)?;
+            actuator.execute(state)
+        }
         other => Err(ActuatorError::Validate(format!(
             "unsupported contract type: {other:?}"
         ))),
