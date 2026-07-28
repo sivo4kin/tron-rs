@@ -19,6 +19,7 @@ pub mod smart_contract;
 pub mod transfer;
 pub mod vm_host;
 pub mod vote;
+pub mod withdraw;
 pub mod witness;
 
 #[derive(Debug, Error, PartialEq)]
