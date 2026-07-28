@@ -7,6 +7,7 @@
 //! spike validates that revm's gas model can host Tron's energy meter; the fallback
 //! is a clean-room Sputnik-style VM. This crate holds the energy meter today.
 
+pub mod call;
 pub mod energy;
 pub mod interp;
 pub mod opcode;
