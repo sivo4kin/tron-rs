@@ -119,6 +119,12 @@ pub fn apply_transaction<S: KvStore>(
             actuator.validate(state)?;
             actuator.execute(state)
         }
+        ContractType::AccountPermissionUpdateContract => {
+            let c: protocol::AccountPermissionUpdateContract = unpack(contract)?;
+            let actuator = crate::permission::AccountPermissionUpdateActuator::new(&c);
+            actuator.validate(state)?;
+            actuator.execute(state)
+        }
         ContractType::WitnessCreateContract => {
             let c: protocol::WitnessCreateContract = unpack(contract)?;
             let actuator = crate::witness::WitnessCreateActuator::new(&c);
