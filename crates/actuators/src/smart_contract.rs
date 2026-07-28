@@ -48,18 +48,42 @@ impl<'a> TriggerSmartContractActuator<'a> {
         &self,
         state: &mut WorldState<S>,
     ) -> Result<ExecutionResult, ActuatorError> {
+        let owner = parse_address(&self.contract.owner_address, "ownerAddress")?;
         let target = parse_address(&self.contract.contract_address, "contractAddress")?;
         let code = state.get_code(&target).map_err(ActuatorError::from)?;
-        let input = &self.contract.data;
+        let input = self.contract.data.clone();
+
+        // Energy price (sun/energy) from dynamic properties, default 100.
+        let energy_price = {
+            let p = state.get_prop_i64("ENERGY_FEE").unwrap_or(0);
+            if p > 0 { p } else { tron_vm::DEFAULT_ENERGY_FEE_SUN }
+        };
 
         // Non-precompile address -> run bytecode against the contract's storage.
-        let mut host = StateHost::new(state, target);
-        let result = call(0x00, input, &code, self.energy_limit, &mut host);
-        if !result.success {
-            return Err(ActuatorError::Execute("contract execution reverted".into()));
+        let energy_used = {
+            let mut host = StateHost::new(state, target);
+            let result = call(0x00, &input, &code, self.energy_limit, &mut host);
+            if !result.success {
+                return Err(ActuatorError::Execute("contract execution reverted".into()));
+            }
+            result.energy_used
+        };
+
+        // Charge the caller energy_used * energy_price sun (java-tron energy fee).
+        let fee = tron_vm::energy_to_sun(energy_used, energy_price);
+        if fee > 0 {
+            let mut owner_account = state
+                .get_account(&owner)?
+                .ok_or_else(|| ActuatorError::Execute("owner account missing".into()))?;
+            owner_account.balance = owner_account
+                .balance
+                .checked_sub(fee)
+                .filter(|b| *b >= 0)
+                .ok_or_else(|| ActuatorError::Execute("insufficient balance for energy fee".into()))?;
+            state.put_account(&owner, &owner_account)?;
+            state.burn_trx(fee)?;
         }
-        // Energy is metered in vm units; fee-in-sun conversion (energy price) is P2 follow-up.
-        Ok(ExecutionResult { fee: 0 })
+        Ok(ExecutionResult { fee })
     }
 }
 
@@ -122,14 +146,21 @@ mod tests {
         let code = vec![Push1 as u8, 5, Push1 as u8, 9, Sstore as u8, Stop as u8];
         ws.put_code(&contract, &code).unwrap();
 
+        let owner = addr(1);
+        ws.put_account(&owner, &protocol::Account {
+            address: owner.as_bytes().to_vec(), balance: 100_000_000, ..Default::default()
+        }).unwrap();
         let trigger = TriggerSmartContract {
-            owner_address: addr(1).as_bytes().to_vec(),
+            owner_address: owner.as_bytes().to_vec(),
             contract_address: contract.as_bytes().to_vec(),
             ..Default::default()
         };
         let act = TriggerSmartContractActuator::new(&trigger, 1_000_000);
         assert_eq!(act.validate(&ws).unwrap(), 0);
-        act.execute(&mut ws).unwrap();
+        let res = act.execute(&mut ws).unwrap();
+        // energy fee charged = energy_used * 100 sun (> 0, dominated by SSTORE)
+        assert!(res.fee > 0);
+        assert_eq!(ws.get_account(&owner).unwrap().unwrap().balance, 100_000_000 - res.fee);
 
         // storage[9] = 5 persisted to the contract's storage
         let host = StateHost::new(&mut ws, contract);

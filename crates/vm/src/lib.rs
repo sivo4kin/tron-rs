@@ -16,6 +16,13 @@ pub mod precompile;
 /// Energy is Tron's gas. Default price is 100 sun/energy (governance-adjustable).
 pub const DEFAULT_ENERGY_FEE_SUN: i64 = 100;
 
+/// Convert consumed energy to a sun fee at the given energy price (java-tron:
+/// `energyFee = energyUsage * energyPrice`).
+pub fn energy_to_sun(energy_used: u64, energy_price_sun: i64) -> i64 {
+    (energy_used as i128 * energy_price_sun as i128)
+        .clamp(0, i64::MAX as i128) as i64
+}
+
 /// Meters energy consumption for contract execution (P2).
 #[derive(Debug, Clone, Copy)]
 pub struct EnergyMeter {
@@ -41,6 +48,17 @@ impl EnergyMeter {
 
     pub fn remaining(&self) -> u64 {
         self.limit.saturating_sub(self.used)
+    }
+}
+
+#[cfg(test)]
+mod fee_tests {
+    use super::*;
+    #[test]
+    fn energy_to_sun_conversion() {
+        assert_eq!(energy_to_sun(0, 100), 0);
+        assert_eq!(energy_to_sun(20_000, 100), 2_000_000);
+        assert_eq!(energy_to_sun(u64::MAX, 100), i64::MAX); // saturates
     }
 }
 
