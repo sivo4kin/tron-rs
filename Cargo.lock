@@ -1998,7 +1998,10 @@ name = "tron-node"
 version = "0.0.1"
 dependencies = [
  "anyhow",
+ "axum",
+ "reqwest",
  "serde",
+ "serde_json",
  "tokio",
  "tokio-util",
  "toml",

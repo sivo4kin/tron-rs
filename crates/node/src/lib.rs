@@ -91,12 +91,35 @@ impl Node {
             data_dir = %self.config.data_dir,
             "tron-rs node starting"
         );
-        let _state = self.open_state()?;
+        let state = std::sync::Arc::new(self.open_state()?);
 
-        // Placeholder service set — replaced by real subsystems in later phases.
-        let services = ["p2p", "consensus", "rpc"];
-        let mut handles = Vec::with_capacity(services.len());
-        for name in services {
+        let mut handles = Vec::new();
+
+        // Real HTTP API service: serve the tron-openapi handlers on http_port until
+        // shutdown (graceful — the axum server is aborted when the token fires).
+        {
+            let http_addr: std::net::SocketAddr =
+                ([0, 0, 0, 0], self.config.http_port).into();
+            let router = tron_rpc::server::router(state.clone());
+            let token = shutdown.clone();
+            handles.push(tokio::spawn(async move {
+                match tokio::net::TcpListener::bind(http_addr).await {
+                    Ok(listener) => {
+                        tracing::info!(addr = %http_addr, "http api listening");
+                        let serve = axum::serve(listener, router)
+                            .with_graceful_shutdown(async move { token.cancelled().await });
+                        if let Err(e) = serve.await {
+                            tracing::warn!(error = %e, "http api error");
+                        }
+                    }
+                    Err(e) => tracing::warn!(addr = %http_addr, error = %e, "http bind failed"),
+                }
+                tracing::info!(service = "rpc", "service stopped");
+            }));
+        }
+
+        // Placeholder services for subsystems not yet wired (p2p, consensus).
+        for name in ["p2p", "consensus"] {
             let token = shutdown.clone();
             let name = name.to_string();
             handles.push(tokio::spawn(async move {
