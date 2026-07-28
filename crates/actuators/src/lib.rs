@@ -7,11 +7,14 @@
 use thiserror::Error;
 use tron_state::StateError;
 
+pub mod account;
 pub mod asset_transfer;
 pub mod executor;
 pub mod freeze_v2;
+pub mod proposal;
 pub mod transfer;
 pub mod vote;
+pub mod witness;
 
 #[derive(Debug, Error, PartialEq)]
 pub enum ActuatorError {
