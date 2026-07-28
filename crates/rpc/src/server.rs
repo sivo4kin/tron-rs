@@ -61,6 +61,9 @@ pub fn router_with_state<S: KvStore + 'static>(state: NodeState<S>) -> Router {
         .route("/wallet/getenergyprices", post(get_energy_prices::<S>))
         .route("/wallet/getbandwidthprices", post(get_bandwidth_prices::<S>))
         .route("/wallet/getmemofee", post(get_memo_fee::<S>))
+        .route("/wallet/listexchanges", post(list_exchanges))
+        .route("/wallet/listproposals", post(list_proposals))
+        .route("/wallet/getassetissuelist", post(get_asset_issue_list))
         .route("/wallet/getnowblock", post(get_now_block::<S>))
         .route("/wallet/getblockbynum", post(get_block_by_num::<S>))
         .route("/wallet/getblockbylatestnum", post(get_block_by_latest_num::<S>))
@@ -86,6 +89,10 @@ async fn get_account<S: KvStore>(
 ) -> Json<Value> {
     Json(http::get_account(&state, &req))
 }
+
+async fn list_exchanges() -> Json<Value> { Json(http::list_exchanges()) }
+async fn list_proposals() -> Json<Value> { Json(http::list_proposals()) }
+async fn get_asset_issue_list() -> Json<Value> { Json(http::get_asset_issue_list()) }
 
 async fn get_energy_prices<S: KvStore>(State(state): State<AppState<S>>) -> Json<Value> {
     Json(http::get_energy_prices(&state))

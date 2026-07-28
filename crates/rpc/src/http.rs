@@ -390,6 +390,23 @@ pub fn get_memo_fee<S: KvStore>(state: &WorldState<S>) -> Value {
 }
 
 
+/// `POST /wallet/listexchanges` — the Bancor exchange list (empty until the
+/// exchange store is enumerated; the schema shape is returned meanwhile).
+pub fn list_exchanges() -> Value {
+    json!({ "exchanges": [] })
+}
+
+/// `POST /wallet/listproposals` — governance proposals.
+pub fn list_proposals() -> Value {
+    json!({ "proposals": [] })
+}
+
+/// `POST /wallet/getassetissuelist` — TRC10 asset issuances.
+pub fn get_asset_issue_list() -> Value {
+    json!({ "assetIssue": [] })
+}
+
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -676,5 +693,12 @@ mod tests {
         assert_eq!(get_energy_prices(&ws)["prices"], "0:140");
         assert_eq!(get_bandwidth_prices(&ws)["prices"], "0:1000");
         assert_eq!(get_memo_fee(&ws)["prices"], "0:0");
+    }
+
+    #[test]
+    fn list_endpoints_return_empty_shapes() {
+        assert!(list_exchanges()["exchanges"].as_array().unwrap().is_empty());
+        assert!(list_proposals()["proposals"].as_array().unwrap().is_empty());
+        assert!(get_asset_issue_list()["assetIssue"].as_array().unwrap().is_empty());
     }
 }
