@@ -8,7 +8,6 @@
 //!
 //! This is the robustness precondition for the full state-diff parity gate.
 
-use prost::Message;
 use std::collections::BTreeMap;
 use tron_actuators::executor::apply_transaction;
 use tron_actuators::ActuatorError;
