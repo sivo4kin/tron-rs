@@ -364,10 +364,15 @@ pub fn get_reward<S: KvStore>(state: &WorldState<S>, req: &Value) -> Value {
 
 /// `POST /wallet/getBrokerage` — a witness's brokerage percentage (default 20).
 pub fn get_brokerage<S: KvStore>(state: &WorldState<S>, req: &Value) -> Value {
-    let key_present = req.get("address").and_then(Value::as_str).is_some();
-    // Per-witness brokerage store isn't modeled yet; return the network default.
-    let _ = (state, key_present);
-    json!({ "brokerage": tron_consensus::reward::DEFAULT_BROKERAGE })
+    // Read the witness's stored brokerage (UpdateBrokerage actuator), defaulting
+    // to the network default when unset or the address is missing/unparseable.
+    let b = req
+        .get("address")
+        .and_then(Value::as_str)
+        .and_then(parse_req_address)
+        .and_then(|a| state.get_brokerage(&a).ok())
+        .unwrap_or(tron_consensus::reward::DEFAULT_BROKERAGE);
+    json!({ "brokerage": b })
 }
 
 
@@ -731,6 +736,9 @@ mod tests {
         assert_eq!(get_reward(&ws, &json!({ "address": other.to_hex() }))["reward"], 0);
         // default brokerage 20
         assert_eq!(get_brokerage(&ws, &json!({ "address": addr.to_hex() }))["brokerage"], 20);
+        // a stored brokerage is served back
+        ws.put_brokerage(&addr, 35).unwrap();
+        assert_eq!(get_brokerage(&ws, &json!({ "address": addr.to_hex() }))["brokerage"], 35);
     }
 
     #[test]

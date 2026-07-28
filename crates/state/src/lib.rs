@@ -31,6 +31,7 @@ pub mod cf {
     pub const BLOCK: &str = "block";
     pub const TRANSACTION: &str = "transaction";
     pub const BLOCK_INDEX: &str = "block_index";
+    pub const BROKERAGE: &str = "brokerage";
     pub const DYNAMIC_PROPERTIES: &str = "properties";
 }
 
@@ -98,6 +99,22 @@ impl<S: KvStore> WorldState<S> {
         };
         self.put_account(addr, &account)?;
         Ok(account)
+    }
+
+    // -- brokerage --------------------------------------------------------
+
+    /// Set a witness's brokerage percentage (0..=100), keyed by address.
+    pub fn put_brokerage(&self, addr: &Address, pct: i64) -> Result<(), StateError> {
+        self.db.put("brokerage", addr.as_bytes(), &pct.to_be_bytes()).map_err(Into::into)
+    }
+
+    /// Get a witness's brokerage percentage, defaulting to 20 when unset
+    /// (java-tron `DEFAULT_BROKERAGE`).
+    pub fn get_brokerage(&self, addr: &Address) -> Result<i64, StateError> {
+        match self.db.get("brokerage", addr.as_bytes())? {
+            Some(b) if b.len() == 8 => Ok(i64::from_be_bytes(b.as_slice().try_into().unwrap())),
+            _ => Ok(20),
+        }
     }
 
     // -- contract code ----------------------------------------------------

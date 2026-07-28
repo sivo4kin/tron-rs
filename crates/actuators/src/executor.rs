@@ -77,6 +77,12 @@ pub fn apply_transaction<S: KvStore>(
             actuator.validate(state)?;
             actuator.execute(state)
         }
+        ContractType::UpdateBrokerageContract => {
+            let c: protocol::UpdateBrokerageContract = unpack(contract)?;
+            let actuator = crate::brokerage::UpdateBrokerageActuator::new(&c);
+            actuator.validate(state)?;
+            actuator.execute(state)
+        }
         ContractType::WithdrawExpireUnfreezeContract => {
             let c: protocol::WithdrawExpireUnfreezeContract = unpack(contract)?;
             let actuator = crate::withdraw_unfreeze::WithdrawExpireUnfreezeActuator::new(&c);
