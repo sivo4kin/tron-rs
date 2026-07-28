@@ -304,6 +304,37 @@ pub fn get_block_by_limit_next<S: KvStore>(state: &WorldState<S>, req: &Value) -
 }
 
 
+/// `POST /wallet/getaccountresource` — body `{ "address": "..." }`.
+/// Returns the account's staked resources derived from its `frozen_v2` entries
+/// (bandwidth vs energy). A subset of java-tron's resource view.
+pub fn get_account_resource<S: KvStore>(state: &WorldState<S>, req: &Value) -> Value {
+    let Some(addr_str) = req.get("address").and_then(Value::as_str) else {
+        return error("invalid address");
+    };
+    let Some(addr) = parse_req_address(addr_str) else {
+        return error("invalid address");
+    };
+    let account = match state.get_account(&addr) {
+        Ok(Some(a)) => a,
+        _ => return json!({}),
+    };
+    // ResourceCode: 0 = BANDWIDTH, 1 = ENERGY (java-tron proto).
+    let mut frozen_bandwidth = 0i64;
+    let mut frozen_energy = 0i64;
+    for f in &account.frozen_v2 {
+        match f.r#type {
+            1 => frozen_energy += f.amount,
+            _ => frozen_bandwidth += f.amount,
+        }
+    }
+    json!({
+        "tronPowerLimit": (frozen_bandwidth + frozen_energy) / 1_000_000,
+        "netLimit": frozen_bandwidth,
+        "EnergyLimit": frozen_energy,
+    })
+}
+
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -530,5 +561,26 @@ mod tests {
         let resp = get_block_by_limit_next(&ws, &json!({ "startNum": 1, "endNum": 4 }));
         assert_eq!(resp["block"].as_array().unwrap().len(), 3); // 1,2,3
         assert!(get_block_by_limit_next(&ws, &json!({ "startNum": 4, "endNum": 1 }))["Error"].is_string());
+    }
+
+    #[test]
+    fn account_resource_from_frozen_v2() {
+        let mut ws = WorldState::new(MemoryStore::new());
+        let addr = Address::from_body([0x33; 20]);
+        ws.put_account(&addr, &protocol::Account {
+            address: addr.as_bytes().to_vec(),
+            frozen_v2: vec![
+                protocol::account::FreezeV2 { r#type: 0, amount: 5_000_000 }, // bandwidth
+                protocol::account::FreezeV2 { r#type: 1, amount: 3_000_000 }, // energy
+            ],
+            ..Default::default()
+        }).unwrap();
+        let resp = get_account_resource(&ws, &json!({ "address": addr.to_hex() }));
+        assert_eq!(resp["netLimit"], 5_000_000);
+        assert_eq!(resp["EnergyLimit"], 3_000_000);
+        assert_eq!(resp["tronPowerLimit"], 8); // 8 TRX staked
+        // unknown account -> empty
+        let other = Address::from_body([0x44; 20]);
+        assert_eq!(get_account_resource(&ws, &json!({ "address": other.to_hex() })), json!({}));
     }
 }
