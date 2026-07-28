@@ -26,6 +26,7 @@ pub mod cf {
     pub const VOTES: &str = "votes";
     pub const ASSET: &str = "asset";
     pub const PROPOSAL: &str = "proposal";
+    pub const EXCHANGE: &str = "exchange";
     pub const DYNAMIC_PROPERTIES: &str = "properties";
 }
 

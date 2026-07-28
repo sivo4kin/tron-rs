@@ -9,7 +9,7 @@ See [`SPEC.md`](./SPEC.md) for the full design, testing strategy, and phased roa
 | Phase | State |
 |---|---|
 | P0 — Scaffold (workspace, proto codegen, primitives, booting node) | **done** |
-| P1 — Chain & state | **in progress** (6 iterations landed, see below) |
+| P1 — Chain & state | **in progress** (7 iterations landed, see below) |
 | P2 — TVM · P3 — Networking · P4 — APIs · P5 — SR | not started |
 
 ### Verified parity so far (against real java-tron blocks)
@@ -33,11 +33,14 @@ generated `Wallet` client) and asserts byte-equality with what java-tron compute
 - **Full structural block validation** passes on every fixture (txTrieRoot,
   parent link, witness signature) and rejects tampered blocks.
 
-Component layers: **13 contract types routed through the executor** across six
+Component layers: **17 contract types routed through the executor** across nine
 actuator modules (transfer, TRC10, freeze/unfreeze v2, vote, proposal x3,
-account x3, witness x2), each with a java-tron-mirrored test table and
-conservation invariants; RocksDB-backed storage behind the `rocksdb` feature.
-**142 tests green.**
+account x3, witness x2, exchange/Bancor-DEX x4, resource delegation x2), the
+**DPoS maintenance cycle** (vote counting -> exact witness sort -> top-27
+election + maintenance scheduling), and **genesis-state initialization** — each
+with a java-tron-mirrored test table and conservation invariants; RocksDB-backed
+storage behind the `rocksdb` feature.
+**190 tests green.**
 
 ## Layout
 

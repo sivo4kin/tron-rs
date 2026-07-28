@@ -119,6 +119,42 @@ pub fn apply_transaction<S: KvStore>(
             actuator.validate(state)?;
             actuator.execute(state)
         }
+        ContractType::ExchangeCreateContract => {
+            let c: protocol::ExchangeCreateContract = unpack(contract)?;
+            let actuator = crate::exchange::ExchangeCreateActuator::new(&c);
+            actuator.validate(state)?;
+            actuator.execute(state)
+        }
+        ContractType::ExchangeInjectContract => {
+            let c: protocol::ExchangeInjectContract = unpack(contract)?;
+            let actuator = crate::exchange::ExchangeInjectActuator::new(&c);
+            actuator.validate(state)?;
+            actuator.execute(state)
+        }
+        ContractType::ExchangeWithdrawContract => {
+            let c: protocol::ExchangeWithdrawContract = unpack(contract)?;
+            let actuator = crate::exchange::ExchangeWithdrawActuator::new(&c);
+            actuator.validate(state)?;
+            actuator.execute(state)
+        }
+        ContractType::ExchangeTransactionContract => {
+            let c: protocol::ExchangeTransactionContract = unpack(contract)?;
+            let actuator = crate::exchange::ExchangeTransactionActuator::new(&c);
+            actuator.validate(state)?;
+            actuator.execute(state)
+        }
+        ContractType::DelegateResourceContract => {
+            let c: protocol::DelegateResourceContract = unpack(contract)?;
+            let actuator = crate::delegate::DelegateResourceActuator::new(&c);
+            actuator.validate(state)?;
+            actuator.execute(state)
+        }
+        ContractType::UnDelegateResourceContract => {
+            let c: protocol::UnDelegateResourceContract = unpack(contract)?;
+            let actuator = crate::delegate::UnDelegateResourceActuator::new(&c);
+            actuator.validate(state)?;
+            actuator.execute(state)
+        }
         other => Err(ActuatorError::Validate(format!(
             "unsupported contract type: {other:?}"
         ))),
