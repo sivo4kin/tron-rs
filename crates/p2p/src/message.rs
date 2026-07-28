@@ -58,10 +58,16 @@ pub struct Frame {
     pub payload: Vec<u8>,
 }
 
+/// Maximum accepted p2p message payload (java-tron caps message body size to
+/// resist memory-exhaustion DoS; ~5 MB is the effective block/message ceiling).
+pub const MAX_MESSAGE_SIZE: usize = 5 * 1024 * 1024;
+
 #[derive(Debug, PartialEq, Eq)]
 pub enum FrameError {
     Empty,
     UnknownType(u8),
+    /// Payload exceeds [`MAX_MESSAGE_SIZE`] — rejected before allocation/parsing.
+    TooLarge(usize),
 }
 
 impl Frame {
@@ -77,9 +83,13 @@ impl Frame {
         out
     }
 
-    /// Decode a `[type_byte][payload]` frame.
+    /// Decode a `[type_byte][payload]` frame, rejecting oversized payloads before
+    /// allocating (DoS hardening).
     pub fn decode(bytes: &[u8]) -> Result<Frame, FrameError> {
         let (&first, rest) = bytes.split_first().ok_or(FrameError::Empty)?;
+        if rest.len() > MAX_MESSAGE_SIZE {
+            return Err(FrameError::TooLarge(rest.len()));
+        }
         let kind = MessageType::from_u8(first).ok_or(FrameError::UnknownType(first))?;
         Ok(Frame::new(kind, rest.to_vec()))
     }
@@ -117,5 +127,17 @@ mod tests {
     fn empty_payload_is_valid() {
         let f = Frame::new(MessageType::P2pPing, vec![]);
         assert_eq!(Frame::decode(&f.encode()).unwrap(), f);
+    }
+
+    #[test]
+    fn oversized_payload_rejected_before_alloc() {
+        // A type byte followed by a payload one over the cap must be rejected.
+        let mut buf = vec![MessageType::Block as u8];
+        buf.resize(1 + MAX_MESSAGE_SIZE + 1, 0);
+        assert!(matches!(Frame::decode(&buf), Err(FrameError::TooLarge(_))));
+        // At exactly the cap it is accepted.
+        let mut ok = vec![MessageType::Block as u8];
+        ok.resize(1 + MAX_MESSAGE_SIZE, 0);
+        assert!(Frame::decode(&ok).is_ok());
     }
 }
