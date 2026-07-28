@@ -191,6 +191,50 @@ pub fn list_nodes() -> Value {
 }
 
 
+/// `POST /wallet/getcontract` — body `{ "value": "<address>" }`.
+/// Returns the deployed contract's bytecode + address (empty object if none).
+pub fn get_contract<S: KvStore>(state: &WorldState<S>, req: &Value) -> Value {
+    let Some(addr_str) = req.get("value").and_then(Value::as_str) else {
+        return error("invalid address");
+    };
+    let Some(addr) = parse_req_address(addr_str) else {
+        return error("invalid address");
+    };
+    match state.get_code(&addr) {
+        Ok(code) if !code.is_empty() => json!({
+            "contract_address": addr.to_hex(),
+            "bytecode": hex::encode(&code),
+        }),
+        _ => json!({}),
+    }
+}
+
+/// `POST /wallet/gettransactionbyid` — body `{ "value": "<txid hex>" }`.
+pub fn get_transaction_by_id<S: KvStore>(state: &WorldState<S>, req: &Value) -> Value {
+    let Some(id_hex) = req.get("value").and_then(Value::as_str) else {
+        return error("invalid txid");
+    };
+    let Ok(id) = hex::decode(id_hex.trim_start_matches("0x")) else {
+        return error("invalid txid");
+    };
+    match state.get_transaction(&id) {
+        Ok(Some(tx)) => {
+            let raw = tx.raw_data.as_ref();
+            json!({
+                "txID": id_hex,
+                "raw_data": {
+                    "ref_block_num": raw.map(|r| r.ref_block_num).unwrap_or(0),
+                    "timestamp": raw.map(|r| r.timestamp).unwrap_or(0),
+                    "contract_count": raw.map(|r| r.contract.len()).unwrap_or(0),
+                },
+                "signature_count": tx.signature.len(),
+            })
+        }
+        _ => json!({}),
+    }
+}
+
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -318,5 +362,33 @@ mod tests {
         assert_eq!(info["configNodeInfo"]["listenPort"], 18888);
         assert!(info["configNodeInfo"]["codeVersion"].is_string());
         assert_eq!(list_nodes()["nodes"].as_array().unwrap().len(), 0);
+    }
+
+    #[test]
+    fn get_contract_returns_bytecode() {
+        let mut ws = WorldState::new(MemoryStore::new());
+        let addr = Address::from_body([0xcc; 20]);
+        ws.put_code(&addr, &[0x60, 0x00]).unwrap();
+        let resp = get_contract(&ws, &json!({ "value": addr.to_hex() }));
+        assert_eq!(resp["bytecode"], "6000");
+        // unknown contract -> empty
+        let other = Address::from_body([0xdd; 20]);
+        assert_eq!(get_contract(&ws, &json!({ "value": other.to_hex() })), json!({}));
+    }
+
+    #[test]
+    fn get_transaction_by_id_returns_stored_tx() {
+        let mut ws = WorldState::new(MemoryStore::new());
+        let tx = protocol::Transaction {
+            raw_data: Some(protocol::transaction::Raw { ref_block_num: 5, ..Default::default() }),
+            signature: vec![vec![0u8; 65]],
+            ..Default::default()
+        };
+        let id = tron_chain::tx_id(&tx);
+        ws.put_transaction(&id.0, &tx).unwrap();
+        let resp = get_transaction_by_id(&ws, &json!({ "value": id.to_hex() }));
+        assert_eq!(resp["raw_data"]["ref_block_num"], 5);
+        assert_eq!(resp["signature_count"], 1);
+        assert_eq!(get_transaction_by_id(&ws, &json!({ "value": "00" })), json!({}));
     }
 }

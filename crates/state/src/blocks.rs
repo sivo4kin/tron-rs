@@ -41,6 +41,28 @@ impl<S: KvStore> WorldState<S> {
         }
     }
 
+    /// Persist a transaction by its 32-byte id (java-tron `TransactionStore`).
+    pub fn put_transaction(&mut self, txid: &[u8], tx: &protocol::Transaction) -> Result<(), StateError> {
+        self.db.put("transaction", txid, &tx.encode_to_vec())?;
+        Ok(())
+    }
+
+    pub fn get_transaction(&self, txid: &[u8]) -> Result<Option<protocol::Transaction>, StateError> {
+        match self.db.get("transaction", txid)? {
+            Some(bytes) => Ok(Some(protocol::Transaction::decode(bytes.as_slice())?)),
+            None => Ok(None),
+        }
+    }
+
+    /// Index all of a block's transactions by id (called on block application).
+    pub fn index_block_transactions(&mut self, block: &protocol::Block) -> Result<(), StateError> {
+        for tx in &block.transactions {
+            let id = tron_chain::tx_id(tx);
+            self.put_transaction(&id.0, tx)?;
+        }
+        Ok(())
+    }
+
     /// The head block (highest stored number).
     pub fn get_now_block(&self) -> Result<Option<protocol::Block>, StateError> {
         let head = self.get_prop_i64(LATEST_BLOCK_NUMBER)?;
@@ -82,5 +104,24 @@ mod tests {
         assert_eq!(now.block_header.unwrap().raw_data.unwrap().number, 3);
         assert_eq!(ws.get_prop_i64(props::LATEST_BLOCK_HEADER_TIMESTAMP).unwrap(), 300);
         assert_eq!(ws.get_prop_i64(LATEST_BLOCK_NUMBER).unwrap(), 3);
+    }
+
+    #[test]
+    fn transaction_store_roundtrip_and_index() {
+        let mut ws = WorldState::new(MemoryStore::new());
+        let tx = protocol::Transaction {
+            raw_data: Some(protocol::transaction::Raw { ref_block_num: 7, ..Default::default() }),
+            ..Default::default()
+        };
+        let id = tron_chain::tx_id(&tx);
+        assert!(ws.get_transaction(&id.0).unwrap().is_none());
+        ws.put_transaction(&id.0, &tx).unwrap();
+        assert_eq!(
+            ws.get_transaction(&id.0).unwrap().unwrap().raw_data.unwrap().ref_block_num, 7);
+
+        // index_block_transactions indexes every tx in a block
+        let block = protocol::Block { transactions: vec![tx.clone()], ..Default::default() };
+        ws.index_block_transactions(&block).unwrap();
+        assert!(ws.get_transaction(&id.0).unwrap().is_some());
     }
 }

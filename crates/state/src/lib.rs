@@ -29,6 +29,7 @@ pub mod cf {
     pub const PROPOSAL: &str = "proposal";
     pub const EXCHANGE: &str = "exchange";
     pub const BLOCK: &str = "block";
+    pub const TRANSACTION: &str = "transaction";
     pub const DYNAMIC_PROPERTIES: &str = "properties";
 }
 

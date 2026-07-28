@@ -2058,6 +2058,7 @@ version = "0.0.1"
 dependencies = [
  "prost",
  "thiserror",
+ "tron-chain",
  "tron-proto",
  "tron-storage",
  "tron-types",

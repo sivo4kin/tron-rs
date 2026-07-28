@@ -20,6 +20,8 @@ pub fn router<S: KvStore + 'static>(state: AppState<S>) -> Router {
         .route("/wallet/getnowblock", post(get_now_block::<S>))
         .route("/wallet/getblockbynum", post(get_block_by_num::<S>))
         .route("/wallet/getblockbylatestnum", post(get_block_by_latest_num::<S>))
+        .route("/wallet/getcontract", post(get_contract::<S>))
+        .route("/wallet/gettransactionbyid", post(get_transaction_by_id::<S>))
         .route("/wallet/getchainparameters", post(get_chain_parameters::<S>))
         .route("/wallet/getnodeinfo", post(get_node_info))
         .route("/wallet/listnodes", post(list_nodes))
@@ -50,6 +52,20 @@ async fn get_block_by_latest_num<S: KvStore>(
     Json(req): Json<Value>,
 ) -> Json<Value> {
     Json(http::get_block_by_latest_num(&state, &req))
+}
+
+async fn get_contract<S: KvStore>(
+    State(state): State<AppState<S>>,
+    Json(req): Json<Value>,
+) -> Json<Value> {
+    Json(http::get_contract(&state, &req))
+}
+
+async fn get_transaction_by_id<S: KvStore>(
+    State(state): State<AppState<S>>,
+    Json(req): Json<Value>,
+) -> Json<Value> {
+    Json(http::get_transaction_by_id(&state, &req))
 }
 
 async fn get_chain_parameters<S: KvStore>(State(state): State<AppState<S>>) -> Json<Value> {
