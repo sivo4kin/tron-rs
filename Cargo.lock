@@ -2100,6 +2100,8 @@ dependencies = [
  "tron-actuators",
  "tron-chain",
  "tron-consensus",
+ "tron-crypto",
+ "tron-p2p",
  "tron-proto",
  "tron-rpc",
  "tron-state",
