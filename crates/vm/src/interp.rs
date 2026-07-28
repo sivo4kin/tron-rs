@@ -241,6 +241,45 @@ pub fn run_with_input(code: &[u8], calldata: &[u8], limit: u64, host: &mut dyn H
                     pc = d; continue;
                 }
             }
+            OpCode::Call => {
+                // EVM CALL: gas, addr, value, argsOffset, argsLen, retOffset, retLen.
+                let _gas = pop!();
+                let addr = pop!();
+                let _value = pop!();
+                let args_off = pop!().low_u64() as usize;
+                let args_len = pop!().low_u64() as usize;
+                let ret_off = pop!().low_u64() as usize;
+                let ret_len = pop!().low_u64() as usize;
+
+                // Read call args from memory.
+                if !meter.charge(mem.expand_to(args_off.saturating_add(args_len))) {
+                    return done(Halt::OutOfEnergy, &stack, &meter);
+                }
+                let input = mem.data.get(args_off..args_off + args_len).unwrap_or(&[]).to_vec();
+
+                // Currently dispatch precompile targets (0x01..=0x04); contract-to-
+                // contract with storage context is a documented follow-up (pushes 0).
+                let low = (addr.low_u64() & 0xff) as u8;
+                let (success, output) = match crate::precompile::energy_for(low, &input) {
+                    Some(cost) if addr.leading_zeros() >= 248 => {
+                        if !meter.charge(cost) {
+                            return done(Halt::OutOfEnergy, &stack, &meter);
+                        }
+                        (true, crate::precompile::execute(low, &input).unwrap_or_default())
+                    }
+                    _ => (false, Vec::new()),
+                };
+
+                // Write (truncated) return data into memory.
+                if success && ret_len > 0 {
+                    if !meter.charge(mem.expand_to(ret_off.saturating_add(ret_len))) {
+                        return done(Halt::OutOfEnergy, &stack, &meter);
+                    }
+                    let n = ret_len.min(output.len());
+                    mem.data[ret_off..ret_off + n].copy_from_slice(&output[..n]);
+                }
+                push!(U256::from(u8::from(success)));
+            }
             OpCode::Jumpdest => {}
             OpCode::Return => return done(Halt::Return, &stack, &meter),
             OpCode::Revert => return done(Halt::Revert, &stack, &meter),
@@ -371,6 +410,43 @@ mod tests {
         calldata[31] = 99;
         let out = run_with_input(&code, &calldata, 100000, &mut MemoryHost::default());
         assert_eq!(out.stack_top, Some(U256::from(99)));
+    }
+
+    #[test]
+    fn call_to_sha256_precompile_from_bytecode() {
+        // Put "abc" in memory at 0, CALL sha256 (addr 2) with args mem[0..3],
+        // return 32 bytes to mem[32], then MLOAD 32 -> the hash's first word.
+        // Program:
+        //   PUSH1 'a'(0x61) PUSH1 0 MSTORE8   (mem[0]=a)
+        //   PUSH1 'b'(0x62) PUSH1 1 MSTORE8
+        //   PUSH1 'c'(0x63) PUSH1 2 MSTORE8
+        //   CALL: retLen=32 retOff=32 argsLen=3 argsOff=0 value=0 addr=2 gas=0
+        //   PUSH1 32 MLOAD STOP
+        let p = |op: crate::opcode::OpCode| op as u8;
+        let code = [
+            p(Push1), 0x61, p(Push1), 0, p(Mstore8),
+            p(Push1), 0x62, p(Push1), 1, p(Mstore8),
+            p(Push1), 0x63, p(Push1), 2, p(Mstore8),
+            p(Push1), 32, p(Push1), 32, p(Push1), 3, p(Push1), 0,
+            p(Push1), 0, p(Push1), 2, p(Push1), 0, p(Call),
+            p(Push1), 32, p(Mload), p(Stop),
+        ];
+        let out = run_mem(&code, 1_000_000);
+        assert_eq!(out.halt, Halt::Stop);
+        // top of stack = first 32 bytes of sha256("abc")
+        let expected = U256::from_big_endian(&tron_crypto::sha256(b"abc"));
+        assert_eq!(out.stack_top, Some(expected));
+    }
+
+    #[test]
+    fn call_to_non_precompile_pushes_zero() {
+        // CALL addr 0x99 (not a precompile) -> success flag 0
+        let p = |op: crate::opcode::OpCode| op as u8;
+        let code = [
+            p(Push1), 0, p(Push1), 0, p(Push1), 0, p(Push1), 0,
+            p(Push1), 0, p(Push1), 0x99, p(Push1), 0, p(Call), p(Stop),
+        ];
+        assert_eq!(run_mem(&code, 100000).stack_top, Some(U256::zero()));
     }
 
     #[test]

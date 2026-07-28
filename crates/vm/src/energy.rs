@@ -46,6 +46,7 @@ pub fn base_cost(op: OpCode) -> u64 {
         Sstore => 0, // computed by sstore_cost
         // Tron-specific: costs are context-dependent; base tier per java-tron.
         IsContract | IsWitness | TokenBalance | CallTokenValue | CallTokenId => BASE_TIER,
+        Call => 40,       // CALL_ENERGY base (java-tron CALL_ENERGY); dynamic parts added in-op
         CallToken => 40, // CALL_ENERGY tier
         Stake | Unstake | WithdrawReward | RewardBalance => BASE_TIER,
     }
