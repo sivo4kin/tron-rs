@@ -23,6 +23,22 @@ pub fn slot_of(block_time_ms: u64, genesis_time_ms: u64) -> u64 {
     (block_time_ms - genesis_time_ms) / BLOCK_INTERVAL_MS
 }
 
+/// Compute the next maintenance timestamp, java-tron
+/// `DynamicPropertiesStore.updateNextMaintenanceTime`:
+/// snap forward past `block_time` in whole `MAINTENANCE_PERIOD_MS` rounds from the
+/// current maintenance time. Determines when the DPoS election cycle runs.
+pub fn next_maintenance_time(current_maintenance_time: i64, block_time: i64) -> i64 {
+    let interval = MAINTENANCE_PERIOD_MS as i64;
+    let round = (block_time - current_maintenance_time) / interval;
+    current_maintenance_time + (round + 1) * interval
+}
+
+/// Whether a block at `block_time` crosses into a new maintenance round, i.e.
+/// triggers the election cycle (java-tron `needMaintenance`).
+pub fn need_maintenance(next_maintenance_time: i64, block_time: i64) -> bool {
+    block_time >= next_maintenance_time
+}
+
 pub mod validation {
     //! Structural block validation (java-tron `BlockCapsule` checks):
     //! header present, `txTrieRoot` matches the transactions, witness signature
@@ -134,5 +150,20 @@ mod tests {
         assert_eq!(slot_of(genesis, genesis), 0);
         assert_eq!(slot_of(genesis + 3_000, genesis), 1);
         assert_eq!(slot_of(genesis + 9_000, genesis), 3);
+    }
+
+    #[test]
+    fn maintenance_scheduling() {
+        let interval = MAINTENANCE_PERIOD_MS as i64;
+        let cur = 1_000_000_000;
+        // block just after current maintenance -> next is one interval on
+        assert_eq!(next_maintenance_time(cur, cur + 1), cur + interval);
+        // block 2.5 intervals ahead -> snaps to the 3rd interval boundary
+        assert_eq!(
+            next_maintenance_time(cur, cur + interval * 5 / 2),
+            cur + interval * 3
+        );
+        assert!(need_maintenance(cur + interval, cur + interval));
+        assert!(!need_maintenance(cur + interval, cur + interval - 1));
     }
 }
