@@ -9,7 +9,7 @@ See [`SPEC.md`](./SPEC.md) for the full design, testing strategy, and phased roa
 | Phase | State |
 |---|---|
 | P0 — Scaffold (workspace, proto codegen, primitives, booting node) | **done** |
-| P1 — Chain & state | **in progress** (4 iterations landed, see below) |
+| P1 — Chain & state | **in progress** (6 iterations landed, see below) |
 | P2 — TVM · P3 — Networking · P4 — APIs · P5 — SR | not started |
 
 ### Verified parity so far (against real java-tron blocks)
@@ -26,9 +26,18 @@ generated `Wallet` client) and asserts byte-equality with what java-tron compute
 - **718 live transaction signatures** recover; Nile txs match `owner_address` 100%
   (mainnet's delegated remainder is permission-based signing — expected).
 
-Plus unit/component layers: merkle shapes, address/Base58Check, crypto vectors,
-state-store roundtrips, and a 9-scenario `TransferActuator` suite with a
-supply-conservation invariant. **45 tests green.**
+- **257 real TransferContract txs** replayed through the executor (real `Any`
+  packing) with value conservation on every one.
+- **Real accounts** re-encode byte-identically (vendored-proto currency guard) and
+  round-trip unchanged through the state store.
+- **Full structural block validation** passes on every fixture (txTrieRoot,
+  parent link, witness signature) and rejects tampered blocks.
+
+Component layers: **13 contract types routed through the executor** across six
+actuator modules (transfer, TRC10, freeze/unfreeze v2, vote, proposal x3,
+account x3, witness x2), each with a java-tron-mirrored test table and
+conservation invariants; RocksDB-backed storage behind the `rocksdb` feature.
+**142 tests green.**
 
 ## Layout
 
@@ -63,7 +72,7 @@ cargo run -p tron-verify --bin capture -- \
 
 ## Next (P1 remainder)
 
-Block-application pipeline (route txs to actuators, apply blocks from fixtures),
-remaining system-contract actuators (TRC10, freeze/stake v2, vote, witness, proposal),
-RocksDB storage backend, and the differential **state diff** vs a java-tron reference
-node (SPEC section 7) as the D3 parity gate.
+Maintenance-cycle logic (vote counting -> active witness set), the differential
+**state diff** vs a java-tron reference node (SPEC section 7) as the D3 parity
+gate, remaining actuator families (exchange, market, resource delegation), and
+genesis-state initialization for from-scratch replay.

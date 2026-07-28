@@ -107,6 +107,18 @@ pub fn apply_transaction<S: KvStore>(
             actuator.validate(state)?;
             actuator.execute(state)
         }
+        ContractType::WitnessCreateContract => {
+            let c: protocol::WitnessCreateContract = unpack(contract)?;
+            let actuator = crate::witness::WitnessCreateActuator::new(&c);
+            actuator.validate(state)?;
+            actuator.execute(state)
+        }
+        ContractType::WitnessUpdateContract => {
+            let c: protocol::WitnessUpdateContract = unpack(contract)?;
+            let actuator = crate::witness::WitnessUpdateActuator::new(&c);
+            actuator.validate(state)?;
+            actuator.execute(state)
+        }
         other => Err(ActuatorError::Validate(format!(
             "unsupported contract type: {other:?}"
         ))),
