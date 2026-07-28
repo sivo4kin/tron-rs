@@ -39,8 +39,8 @@ pub fn base_cost(op: OpCode) -> u64 {
         Jumpi => HIGH_TIER,
         Mload | Mstore | Mstore8 => VERY_LOW_TIER,
         CallDataLoad => VERY_LOW_TIER,
-        CallDataSize => BASE_TIER,
-        CallDataCopy => VERY_LOW_TIER,
+        CallDataSize | ReturnDataSize => BASE_TIER,
+        CallDataCopy | ReturnDataCopy => VERY_LOW_TIER,
         Exp => EXP_ENERGY,
         Sload => SLOAD,
         Sstore => 0, // computed by sstore_cost

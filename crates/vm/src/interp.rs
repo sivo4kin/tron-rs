@@ -56,6 +56,8 @@ pub struct Outcome {
     pub halt: Halt,
     pub stack_top: Option<U256>,
     pub energy_used: u64,
+    /// Bytes produced by a `RETURN`/`REVERT` (memory[off..off+len]), else empty.
+    pub return_data: Vec<u8>,
 }
 
 /// Run `code` with an energy `limit` against `host` (no calldata).
@@ -101,6 +103,7 @@ pub fn run_with_input(code: &[u8], calldata: &[u8], limit: u64, host: &mut dyn H
     let mut meter = EnergyMeter::new(limit);
     let mut stack: Vec<U256> = Vec::new();
     let mut mem = Memory::default();
+    let mut last_return_data: Vec<u8> = Vec::new();
     let mut pc = 0usize;
 
     macro_rules! pop {
@@ -174,6 +177,18 @@ pub fn run_with_input(code: &[u8], calldata: &[u8], limit: u64, host: &mut dyn H
                 push!(U256::from_big_endian(&buf));
             }
             OpCode::CallDataSize => push!(U256::from(calldata.len())),
+            OpCode::ReturnDataSize => push!(U256::from(last_return_data.len())),
+            OpCode::ReturnDataCopy => {
+                let dest = pop!().low_u64() as usize;
+                let off = pop!().low_u64() as usize;
+                let len = pop!().low_u64() as usize;
+                if !meter.charge(mem.expand_to(dest.saturating_add(len))) {
+                    return done(Halt::OutOfEnergy, &stack, &meter);
+                }
+                for i in 0..len {
+                    mem.data[dest + i] = last_return_data.get(off + i).copied().unwrap_or(0);
+                }
+            }
             OpCode::CallDataCopy => {
                 let dest = pop!().low_u64() as usize;
                 let off = pop!().low_u64() as usize;
@@ -270,7 +285,9 @@ pub fn run_with_input(code: &[u8], calldata: &[u8], limit: u64, host: &mut dyn H
                     _ => (false, Vec::new()),
                 };
 
-                // Write (truncated) return data into memory.
+                // Record return data (for RETURNDATASIZE/COPY) and write the
+                // truncated copy into memory at retOffset.
+                last_return_data = output.clone();
                 if success && ret_len > 0 {
                     if !meter.charge(mem.expand_to(ret_off.saturating_add(ret_len))) {
                         return done(Halt::OutOfEnergy, &stack, &meter);
@@ -281,8 +298,17 @@ pub fn run_with_input(code: &[u8], calldata: &[u8], limit: u64, host: &mut dyn H
                 push!(U256::from(u8::from(success)));
             }
             OpCode::Jumpdest => {}
-            OpCode::Return => return done(Halt::Return, &stack, &meter),
-            OpCode::Revert => return done(Halt::Revert, &stack, &meter),
+            OpCode::Return | OpCode::Revert => {
+                // RETURN/REVERT: pop memory offset + length, capture the output.
+                let off = pop!().low_u64() as usize;
+                let len = pop!().low_u64() as usize;
+                if !meter.charge(mem.expand_to(off.saturating_add(len))) {
+                    return done(Halt::OutOfEnergy, &stack, &meter);
+                }
+                let output = mem.data.get(off..off + len).unwrap_or(&[]).to_vec();
+                let halt = if op == OpCode::Return { Halt::Return } else { Halt::Revert };
+                return done_out(halt, &stack, &meter, output);
+            }
             other => return done(Halt::BadOpcode(other as u8), &stack, &meter),
         }
         pc += 1;
@@ -291,7 +317,11 @@ pub fn run_with_input(code: &[u8], calldata: &[u8], limit: u64, host: &mut dyn H
 }
 
 fn done(halt: Halt, stack: &[U256], meter: &EnergyMeter) -> Outcome {
-    Outcome { halt, stack_top: stack.last().copied(), energy_used: meter.used }
+    Outcome { halt, stack_top: stack.last().copied(), energy_used: meter.used, return_data: Vec::new() }
+}
+
+fn done_out(halt: Halt, stack: &[U256], meter: &EnergyMeter, output: Vec<u8>) -> Outcome {
+    Outcome { halt, stack_top: stack.last().copied(), energy_used: meter.used, return_data: output }
 }
 
 #[cfg(test)]
@@ -436,6 +466,33 @@ mod tests {
         // top of stack = first 32 bytes of sha256("abc")
         let expected = U256::from_big_endian(&tron_crypto::sha256(b"abc"));
         assert_eq!(out.stack_top, Some(expected));
+    }
+
+    #[test]
+    fn return_captures_memory_output() {
+        // MSTORE 0xabcd at 0, RETURN mem[0..32]
+        // PUSH2 not available; PUSH1 0xcd... use a single byte via MSTORE8 for clarity:
+        // MSTORE8 mem[0]=0x2a, RETURN offset 0 len 1 -> output [0x2a]
+        let p = |op: crate::opcode::OpCode| op as u8;
+        let code = [p(Push1), 0x2a, p(Push1), 0, p(Mstore8), p(Push1), 1, p(Push1), 0, p(Return)];
+        let out = run_mem(&code, 100000);
+        assert_eq!(out.halt, Halt::Return);
+        assert_eq!(out.return_data, vec![0x2a]);
+    }
+
+    #[test]
+    fn returndatasize_and_copy_after_call() {
+        // CALL sha256("") (empty args) -> 32-byte return; RETURNDATASIZE -> 32.
+        let p = |op: crate::opcode::OpCode| op as u8;
+        let code = [
+            // CALL: retLen32 retOff64 argsLen0 argsOff0 value0 addr2 gas0
+            p(Push1), 32, p(Push1), 64, p(Push1), 0, p(Push1), 0,
+            p(Push1), 0, p(Push1), 2, p(Push1), 0, p(Call),
+            p(Pop), // drop success flag
+            p(ReturnDataSize), p(Stop),
+        ];
+        let out = run_mem(&code, 1_000_000);
+        assert_eq!(out.stack_top, Some(U256::from(32)));
     }
 
     #[test]
