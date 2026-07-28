@@ -407,6 +407,18 @@ pub fn get_asset_issue_list() -> Value {
 }
 
 
+/// `POST /wallet/getassetissuebyid` / `getassetissuebyname` — TRC10 asset lookup
+/// (empty until the asset store is populated; returns the empty object shape).
+pub fn get_asset_issue_by_key(_req: &Value) -> Value {
+    json!({})
+}
+
+/// `POST /wallet/getpaginatedassetissuelist` — body `{ "offset": o, "limit": l }`.
+pub fn get_paginated_asset_issue_list(_req: &Value) -> Value {
+    json!({ "assetIssue": [] })
+}
+
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -700,5 +712,11 @@ mod tests {
         assert!(list_exchanges()["exchanges"].as_array().unwrap().is_empty());
         assert!(list_proposals()["proposals"].as_array().unwrap().is_empty());
         assert!(get_asset_issue_list()["assetIssue"].as_array().unwrap().is_empty());
+    }
+
+    #[test]
+    fn asset_query_endpoints() {
+        assert_eq!(get_asset_issue_by_key(&json!({ "value": "1000001" })), json!({}));
+        assert!(get_paginated_asset_issue_list(&json!({ "offset": 0, "limit": 10 }))["assetIssue"].as_array().unwrap().is_empty());
     }
 }
