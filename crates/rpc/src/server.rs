@@ -68,6 +68,9 @@ pub fn router_with_state<S: KvStore + 'static>(state: NodeState<S>) -> Router {
         .route("/wallet/getnodeinfo", post(get_node_info))
         .route("/wallet/listnodes", post(list_nodes))
         .route("/wallet/validateaddress", post(validate_address))
+        .route("/wallet/getburntrx", post(get_burn_trx::<S>))
+        .route("/wallet/getnextmaintenancetime", post(get_next_maintenance_time::<S>))
+        .route("/wallet/totaltransaction", post(total_transaction::<S>))
         .route("/wallet/broadcasthex", post(broadcast_hex))
         .with_state(state)
 }
@@ -149,6 +152,18 @@ async fn list_nodes<S: KvStore>(State(_state): State<AppState<S>>) -> Json<Value
 
 async fn validate_address(Json(req): Json<Value>) -> Json<Value> {
     Json(http::validate_address(&req))
+}
+
+async fn get_burn_trx<S: KvStore>(State(state): State<AppState<S>>) -> Json<Value> {
+    Json(http::get_burn_trx(&state))
+}
+
+async fn get_next_maintenance_time<S: KvStore>(State(state): State<AppState<S>>) -> Json<Value> {
+    Json(http::get_next_maintenance_time(&state))
+}
+
+async fn total_transaction<S: KvStore>(State(state): State<AppState<S>>) -> Json<Value> {
+    Json(http::total_transaction(&state))
 }
 
 async fn broadcast_hex(

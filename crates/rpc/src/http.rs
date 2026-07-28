@@ -335,6 +335,22 @@ pub fn get_account_resource<S: KvStore>(state: &WorldState<S>, req: &Value) -> V
 }
 
 
+/// `POST /wallet/getburntrx` — total TRX burned so far.
+pub fn get_burn_trx<S: KvStore>(state: &WorldState<S>) -> Value {
+    json!({ "amount": state.get_prop_i64("BURN_TRX_AMOUNT").unwrap_or(0) })
+}
+
+/// `POST /wallet/getnextmaintenancetime` — the next DPoS maintenance timestamp.
+pub fn get_next_maintenance_time<S: KvStore>(state: &WorldState<S>) -> Value {
+    json!({ "num": state.get_prop_i64("NEXT_MAINTENANCE_TIME").unwrap_or(0) })
+}
+
+/// `POST /wallet/totaltransaction` — total processed transaction count.
+pub fn total_transaction<S: KvStore>(state: &WorldState<S>) -> Value {
+    json!({ "num": state.get_prop_i64("TOTAL_TRANSACTION").unwrap_or(0) })
+}
+
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -582,5 +598,19 @@ mod tests {
         // unknown account -> empty
         let other = Address::from_body([0x44; 20]);
         assert_eq!(get_account_resource(&ws, &json!({ "address": other.to_hex() })), json!({}));
+    }
+
+    #[test]
+    fn dynamic_property_endpoints() {
+        let mut ws = WorldState::new(MemoryStore::new());
+        ws.put_prop_i64("BURN_TRX_AMOUNT", 42).unwrap();
+        ws.put_prop_i64("NEXT_MAINTENANCE_TIME", 1000).unwrap();
+        ws.put_prop_i64("TOTAL_TRANSACTION", 99).unwrap();
+        assert_eq!(get_burn_trx(&ws)["amount"], 42);
+        assert_eq!(get_next_maintenance_time(&ws)["num"], 1000);
+        assert_eq!(total_transaction(&ws)["num"], 99);
+        // defaults to 0 when unset
+        let empty = WorldState::new(MemoryStore::new());
+        assert_eq!(get_burn_trx(&empty)["amount"], 0);
     }
 }
