@@ -104,6 +104,53 @@ pub fn recover_witness(block: &protocol::Block) -> Option<tron_types::Address> {
     Some(tron_crypto::address_from_public_key(&pubkey))
 }
 
+/// Recover the signer address of a transaction's first signature.
+///
+/// java-tron (`TransactionCapsule.validateSignature`): the signature is over the
+/// transaction id (`sha256(raw_data)`); 65 bytes `r ‖ s ‖ v`.
+pub fn recover_tx_signer(tx: &protocol::Transaction) -> Option<tron_types::Address> {
+    let sig = tx.signature.first()?;
+    if sig.len() != 65 {
+        return None;
+    }
+    let digest = tx_id(tx).0;
+    let mut rs = [0u8; 64];
+    rs.copy_from_slice(&sig[..64]);
+    let v = sig[64];
+    let recovery_id = if v >= 27 { v - 27 } else { v };
+    let pubkey = tron_crypto::recover(&digest, &tron_crypto::RecoverableSignature { rs, recovery_id }).ok()?;
+    Some(tron_crypto::address_from_public_key(&pubkey))
+}
+
+/// Extract the contract's `owner_address` generically.
+///
+/// Every Tron contract message (TransferContract, TriggerSmartContract, …) puts
+/// `owner_address` at **field 1**, so it can be read from the packed `Any` value
+/// without knowing the concrete type: parse the first length-delimited field.
+pub fn tx_owner_address(tx: &protocol::Transaction) -> Option<Vec<u8>> {
+    let raw = tx.raw_data.as_ref()?;
+    let contract = raw.contract.first()?;
+    let any = contract.parameter.as_ref()?;
+    let b = &any.value;
+    // field 1, wire type 2 -> tag byte 0x0a, then varint length
+    if b.len() < 2 || b[0] != 0x0a {
+        return None;
+    }
+    let mut len = 0usize;
+    let mut shift = 0;
+    let mut i = 1;
+    loop {
+        let x = *b.get(i)?;
+        i += 1;
+        len |= ((x & 0x7f) as usize) << shift;
+        if x & 0x80 == 0 {
+            break;
+        }
+        shift += 7;
+    }
+    b.get(i..i + len).map(<[u8]>::to_vec)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

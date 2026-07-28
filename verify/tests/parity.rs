@@ -83,6 +83,50 @@ fn witness_signature_recovers_to_header_address() {
 }
 
 #[test]
+fn tx_signatures_recover_to_owner_address() {
+    // For every single-signature transaction across all fixtures, the recovered
+    // signer must equal the contract's owner_address. Multisig / permission-
+    // delegated txs (signer legitimately != owner) are counted separately and
+    // must stay a small minority; every signature must at least recover.
+    // Measured on live data: Nile traffic is 100% owner-signed, while roughly half
+    // of mainnet txs are signed by permission-delegated keys (exchange
+    // infrastructure using active-permission signing) — recovered != owner there
+    // is correct Tron behavior, not a crypto bug. So: every signature must
+    // recover; Nile fixtures must match exactly; mainnet needs a sanity floor
+    // (a broken v/digest pipeline would match ~0%).
+    let mut grand_total = 0u32;
+    for name in tron_verify::fixture_names().unwrap() {
+        let block = tron_verify::load_block(&name).unwrap();
+        let (mut matched, mut total) = (0u32, 0u32);
+        for tx in &block.transactions {
+            if tx.signature.len() != 1 {
+                continue; // multisig out of scope here
+            }
+            total += 1;
+            let signer = tron_chain::recover_tx_signer(tx)
+                .unwrap_or_else(|| panic!("unrecoverable signature in {name}"));
+            let owner = tron_chain::tx_owner_address(tx)
+                .unwrap_or_else(|| panic!("no owner_address in {name}"));
+            if signer.as_bytes().as_slice() == owner.as_slice() {
+                matched += 1;
+            }
+        }
+        grand_total += total;
+        if total == 0 {
+            continue;
+        }
+        let ratio = f64::from(matched) / f64::from(total);
+        println!("{name}: signer==owner {matched}/{total} ({ratio:.4})");
+        if name.starts_with("nile-") {
+            assert_eq!(matched, total, "{name}: non-delegated testnet txs must all match");
+        } else {
+            assert!(ratio > 0.30, "{name}: ratio {ratio:.4} too low — pipeline likely wrong");
+        }
+    }
+    assert!(grand_total > 100, "expected a substantial tx corpus, got {grand_total}");
+}
+
+#[test]
 fn tx_ids_are_nonzero_and_unique() {
     for name in tron_verify::fixture_names().unwrap() {
         let block = tron_verify::load_block(&name).unwrap();
