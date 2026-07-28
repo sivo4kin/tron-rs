@@ -371,6 +371,25 @@ pub fn get_brokerage<S: KvStore>(state: &WorldState<S>, req: &Value) -> Value {
 }
 
 
+/// `POST /wallet/getenergyprices` — the energy price history string.
+pub fn get_energy_prices<S: KvStore>(state: &WorldState<S>) -> Value {
+    let price = { let p = state.get_prop_i64("ENERGY_FEE").unwrap_or(0); if p > 0 { p } else { 100 } };
+    json!({ "prices": format!("0:{price}") })
+}
+
+/// `POST /wallet/getbandwidthprices` — the bandwidth price history string.
+pub fn get_bandwidth_prices<S: KvStore>(state: &WorldState<S>) -> Value {
+    let price = { let p = state.get_prop_i64("TRANSACTION_FEE").unwrap_or(0); if p > 0 { p } else { 1000 } };
+    json!({ "prices": format!("0:{price}") })
+}
+
+/// `POST /wallet/getmemofee` — the memo fee history string.
+pub fn get_memo_fee<S: KvStore>(state: &WorldState<S>) -> Value {
+    let fee = state.get_prop_i64("MEMO_FEE").unwrap_or(0);
+    json!({ "prices": format!("0:{fee}") })
+}
+
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -647,5 +666,15 @@ mod tests {
         assert_eq!(get_reward(&ws, &json!({ "address": other.to_hex() }))["reward"], 0);
         // default brokerage 20
         assert_eq!(get_brokerage(&ws, &json!({ "address": addr.to_hex() }))["brokerage"], 20);
+    }
+
+    #[test]
+    fn pricing_endpoints() {
+        let mut ws = WorldState::new(MemoryStore::new());
+        assert_eq!(get_energy_prices(&ws)["prices"], "0:100"); // default
+        ws.put_prop_i64("ENERGY_FEE", 140).unwrap();
+        assert_eq!(get_energy_prices(&ws)["prices"], "0:140");
+        assert_eq!(get_bandwidth_prices(&ws)["prices"], "0:1000");
+        assert_eq!(get_memo_fee(&ws)["prices"], "0:0");
     }
 }
