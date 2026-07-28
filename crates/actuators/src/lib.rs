@@ -20,6 +20,7 @@ pub mod transfer;
 pub mod vm_host;
 pub mod vote;
 pub mod withdraw;
+pub mod withdraw_unfreeze;
 pub mod witness;
 
 #[derive(Debug, Error, PartialEq)]
