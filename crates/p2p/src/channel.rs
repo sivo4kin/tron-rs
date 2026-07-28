@@ -60,9 +60,122 @@ where
     Ok(peer.payload)
 }
 
+/// Encode a list of block numbers as concatenated 8-byte big-endian integers.
+fn encode_numbers(nums: &[i64]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(nums.len() * 8);
+    for n in nums {
+        out.extend_from_slice(&n.to_be_bytes());
+    }
+    out
+}
+
+fn decode_numbers(bytes: &[u8]) -> Vec<i64> {
+    bytes
+        .chunks_exact(8)
+        .map(|c| i64::from_be_bytes(c.try_into().unwrap()))
+        .collect()
+}
+
+/// **Server side** of block sync: read the peer's `SyncBlockChain` (its head),
+/// reply with a `BlockInventory` of the block numbers we can offer above it, then
+/// serve each `FetchInvData` request with the corresponding `Block`. `have` is our
+/// sorted block numbers; `block_bytes(n)` returns the encoded block for number `n`.
+/// Returns when the peer stops requesting (EOF).
+pub async fn serve_sync<S, F>(
+    stream: &mut S,
+    have: &[i64],
+    block_bytes: F,
+) -> Result<usize, ChannelError>
+where
+    S: AsyncReadExt + AsyncWriteExt + Unpin,
+    F: Fn(i64) -> Option<Vec<u8>>,
+{
+    let req = read_frame(stream).await?;
+    if req.kind != MessageType::SyncBlockChain {
+        return Err(ChannelError::Frame(FrameError::UnknownType(req.kind as u8)));
+    }
+    let peer_head = decode_numbers(&req.payload).first().copied().unwrap_or(-1);
+    let offer: Vec<i64> = have.iter().copied().filter(|&n| n > peer_head).collect();
+    write_frame(stream, &Frame::new(MessageType::BlockInventory, encode_numbers(&offer))).await?;
+
+    let mut served = 0usize;
+    loop {
+        match read_frame(stream).await {
+            Ok(f) if f.kind == MessageType::FetchInvData => {
+                let n = decode_numbers(&f.payload).first().copied().unwrap_or(-1);
+                let payload = block_bytes(n).unwrap_or_default();
+                write_frame(stream, &Frame::new(MessageType::Block, payload)).await?;
+                served += 1;
+            }
+            Ok(_) => break,
+            Err(ChannelError::Io(e)) if e.kind() == std::io::ErrorKind::UnexpectedEof => break,
+            Err(e) => return Err(e),
+        }
+    }
+    Ok(served)
+}
+
+/// **Client side** of block sync: announce our head, read the offered inventory,
+/// fetch each offered block, and return the received `(number, block_bytes)` pairs.
+pub async fn sync_from<S>(stream: &mut S, our_head: i64) -> Result<Vec<(i64, Vec<u8>)>, ChannelError>
+where
+    S: AsyncReadExt + AsyncWriteExt + Unpin,
+{
+    write_frame(stream, &Frame::new(MessageType::SyncBlockChain, encode_numbers(&[our_head]))).await?;
+    let inv = read_frame(stream).await?;
+    if inv.kind != MessageType::BlockInventory {
+        return Err(ChannelError::Frame(FrameError::UnknownType(inv.kind as u8)));
+    }
+    let numbers = decode_numbers(&inv.payload);
+    let mut out = Vec::with_capacity(numbers.len());
+    for n in numbers {
+        write_frame(stream, &Frame::new(MessageType::FetchInvData, encode_numbers(&[n]))).await?;
+        let block = read_frame(stream).await?;
+        out.push((n, block.payload));
+    }
+    Ok(out)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn block_sync_over_real_tcp() {
+        // Server has "blocks" 1..=5 (payload = the number as a marker); client at
+        // head 2 should receive blocks 3,4,5 over the wire.
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (mut sock, _) = listener.accept().await.unwrap();
+            serve_sync(&mut sock, &[1, 2, 3, 4, 5], |n| Some(format!("block-{n}").into_bytes()))
+                .await
+                .unwrap()
+        });
+
+        let mut client = tokio::net::TcpStream::connect(addr).await.unwrap();
+        let fetched = sync_from(&mut client, 2).await.unwrap();
+        drop(client); // EOF -> server loop ends
+
+        assert_eq!(fetched.len(), 3);
+        assert_eq!(fetched[0], (3, b"block-3".to_vec()));
+        assert_eq!(fetched[2], (5, b"block-5".to_vec()));
+        assert_eq!(server.await.unwrap(), 3); // served three blocks
+    }
+
+    #[tokio::test]
+    async fn sync_with_nothing_to_offer() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            let (mut sock, _) = listener.accept().await.unwrap();
+            let _ = serve_sync(&mut sock, &[1, 2], |_| None).await;
+        });
+        let mut client = tokio::net::TcpStream::connect(addr).await.unwrap();
+        // client already ahead -> empty inventory
+        let fetched = sync_from(&mut client, 5).await.unwrap();
+        assert!(fetched.is_empty());
+    }
 
     #[tokio::test]
     async fn handshake_over_real_tcp_socket() {
