@@ -30,6 +30,7 @@ pub mod cf {
     pub const EXCHANGE: &str = "exchange";
     pub const BLOCK: &str = "block";
     pub const TRANSACTION: &str = "transaction";
+    pub const BLOCK_INDEX: &str = "block_index";
     pub const DYNAMIC_PROPERTIES: &str = "properties";
 }
 

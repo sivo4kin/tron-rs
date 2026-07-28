@@ -262,6 +262,21 @@ pub fn broadcast_hex(req: &Value) -> Value {
 }
 
 
+/// `POST /wallet/getblockbyid` — body `{ "value": "<block id hex>" }`.
+pub fn get_block_by_id<S: KvStore>(state: &WorldState<S>, req: &Value) -> Value {
+    let Some(id_hex) = req.get("value").and_then(Value::as_str) else {
+        return error("invalid block id");
+    };
+    let Ok(id) = hex::decode(id_hex.trim_start_matches("0x")) else {
+        return error("invalid block id");
+    };
+    match state.get_block_by_id(&id) {
+        Ok(Some(b)) => block_to_json(&b),
+        _ => json!({}),
+    }
+}
+
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -442,5 +457,22 @@ mod tests {
 
         // junk hex rejected
         assert_eq!(broadcast_hex(&json!({ "transaction": "zzzz" }))["result"], false);
+    }
+
+    #[test]
+    fn get_block_by_id_endpoint() {
+        let mut ws = WorldState::new(MemoryStore::new());
+        let blk = protocol::Block {
+            block_header: Some(protocol::BlockHeader {
+                raw_data: Some(protocol::block_header::Raw { number: 12, ..Default::default() }),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        ws.put_block(&blk).unwrap();
+        let id = tron_chain::block_id_of(&blk).unwrap();
+        let resp = get_block_by_id(&ws, &json!({ "value": id.to_hex() }));
+        assert_eq!(resp["block_header"]["raw_data"]["number"], 12);
+        assert_eq!(get_block_by_id(&ws, &json!({ "value": "00" })), json!({}));
     }
 }

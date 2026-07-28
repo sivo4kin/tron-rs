@@ -25,6 +25,10 @@ impl<S: KvStore> WorldState<S> {
             .map(|r| r.number)
             .unwrap_or(0);
         self.db.put(CF_BLOCK, &number.to_be_bytes(), &block.encode_to_vec())?;
+        // Index block id -> number for id lookups.
+        if let Some(id) = tron_chain::block_id_of(block) {
+            self.db.put("block_index", &id.0, &number.to_be_bytes())?;
+        }
         if number >= self.get_prop_i64(LATEST_BLOCK_NUMBER)? {
             self.put_prop_i64(LATEST_BLOCK_NUMBER, number)?;
             if let Some(ts) = block.block_header.as_ref().and_then(|h| h.raw_data.as_ref()).map(|r| r.timestamp) {
@@ -61,6 +65,17 @@ impl<S: KvStore> WorldState<S> {
             self.put_transaction(&id.0, tx)?;
         }
         Ok(())
+    }
+
+    /// Fetch a block by its 32-byte block id (via the id->number index).
+    pub fn get_block_by_id(&self, id: &[u8]) -> Result<Option<protocol::Block>, StateError> {
+        match self.db.get("block_index", id)? {
+            Some(bytes) if bytes.len() == 8 => {
+                let num = i64::from_be_bytes(bytes.as_slice().try_into().unwrap());
+                self.get_block_by_num(num)
+            }
+            _ => Ok(None),
+        }
     }
 
     /// The head block (highest stored number).
@@ -123,5 +138,16 @@ mod tests {
         let block = protocol::Block { transactions: vec![tx.clone()], ..Default::default() };
         ws.index_block_transactions(&block).unwrap();
         assert!(ws.get_transaction(&id.0).unwrap().is_some());
+    }
+
+    #[test]
+    fn get_block_by_id_via_index() {
+        let mut ws = WorldState::new(MemoryStore::new());
+        let blk = block(9, 900);
+        ws.put_block(&blk).unwrap();
+        let id = tron_chain::block_id_of(&blk).unwrap();
+        let got = ws.get_block_by_id(&id.0).unwrap().unwrap();
+        assert_eq!(got.block_header.unwrap().raw_data.unwrap().number, 9);
+        assert!(ws.get_block_by_id(&[0u8; 32]).unwrap().is_none());
     }
 }
