@@ -66,6 +66,7 @@ pub fn scheduled_witness<'a>(
 
 pub mod fork;
 pub mod mempool;
+pub mod pbft;
 pub mod producer;
 pub mod reward;
 
