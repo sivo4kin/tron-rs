@@ -16,6 +16,7 @@ pub mod executor;
 pub mod freeze_v2;
 pub mod proposal;
 pub mod transfer;
+pub mod vm_host;
 pub mod vote;
 pub mod witness;
 

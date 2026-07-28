@@ -1649,6 +1649,7 @@ name = "tron-actuators"
 version = "0.0.1"
 dependencies = [
  "hex",
+ "primitive-types",
  "prost",
  "prost-types",
  "thiserror",
@@ -1657,6 +1658,7 @@ dependencies = [
  "tron-state",
  "tron-storage",
  "tron-types",
+ "tron-vm",
 ]
 
 [[package]]
