@@ -5,6 +5,7 @@
 //! `services/discovery` and `services/channel` are the protocol reference; the
 //! fork-choice/finality integration they lacked is first-class here.
 
+pub mod discovery;
 pub mod message;
 pub mod sync;
 
