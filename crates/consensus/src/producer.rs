@@ -63,9 +63,25 @@ pub fn produce_block(
     block
 }
 
+/// Produce a block on `parent` from the mempool: take up to `max_txs` pending
+/// transactions (in order) and assemble+sign a block. Does not evict them — the
+/// caller evicts once the block is accepted (`Mempool::evict_included`).
+pub fn produce_from_pool(
+    parent: &protocol::Block,
+    witness_key: &SecretKey,
+    timestamp: i64,
+    pool: &crate::mempool::Mempool,
+    max_txs: usize,
+    version: i32,
+) -> protocol::Block {
+    let txs = pool.peek(max_txs);
+    produce_block(parent, witness_key, timestamp, txs, version)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::mempool::Mempool;
     use crate::validation::{validate_block, ValidationOptions};
 
     fn genesis() -> protocol::Block {
@@ -108,6 +124,28 @@ mod tests {
         // header's witness_address matches too
         let raw = block.block_header.as_ref().unwrap().raw_data.as_ref().unwrap();
         assert_eq!(raw.witness_address, expected.as_bytes().to_vec());
+    }
+
+    #[test]
+    fn produce_from_pool_includes_pooled_txs_and_validates() {
+        let sk = SecretKey::from_slice(&[0x66u8; 32]).unwrap();
+        let mut pool = Mempool::default();
+        for i in 1..=3i64 {
+            pool.add(protocol::Transaction {
+                raw_data: Some(protocol::transaction::Raw { ref_block_num: i, ..Default::default() }),
+                ..Default::default()
+            });
+        }
+        let block = produce_from_pool(&genesis(), &sk, 3000, &pool, 10, 30);
+        assert_eq!(block.transactions.len(), 3);
+        // block is valid and its txTrieRoot covers the pooled txs
+        validate_block(&block, ValidationOptions { require_witness_signature: true }).unwrap();
+        let raw = block.block_header.as_ref().unwrap().raw_data.as_ref().unwrap();
+        assert_eq!(tron_chain::tx_trie_root(&block).0.to_vec(), raw.tx_trie_root);
+
+        // max_txs bounds the count
+        let bounded = produce_from_pool(&genesis(), &sk, 3000, &pool, 2, 30);
+        assert_eq!(bounded.transactions.len(), 2);
     }
 
     #[test]
