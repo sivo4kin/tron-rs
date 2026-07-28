@@ -1950,6 +1950,7 @@ dependencies = [
  "prost",
  "prost-types",
  "thiserror",
+ "tron-chain",
  "tron-consensus",
  "tron-proto",
  "tron-state",

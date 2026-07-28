@@ -194,6 +194,20 @@ pub fn apply_block<S: KvStore>(
     Ok(results)
 }
 
+/// Full block-processing step (java-tron `Manager.pushBlock` essence): apply all
+/// transactions to the state, then persist the block and index its transactions
+/// by id. Returns the per-transaction results. On a tx failure the whole step
+/// errors (the caller reverts / rejects the block).
+pub fn process_block<S: KvStore>(
+    state: &mut WorldState<S>,
+    block: &protocol::Block,
+) -> Result<Vec<ExecutionResult>, ActuatorError> {
+    let results = apply_block(state, block)?;
+    state.put_block(block).map_err(ActuatorError::from)?;
+    state.index_block_transactions(block).map_err(ActuatorError::from)?;
+    Ok(results)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -270,6 +284,31 @@ mod tests {
         };
         let err = apply_block(&mut ws, &block).unwrap_err();
         assert!(matches!(err, ActuatorError::Validate(m) if m.contains("not sufficient")));
+    }
+
+    #[test]
+    fn process_block_applies_state_stores_block_and_indexes_txs() {
+        let (a, b) = (addr(1), addr(2));
+        let mut ws = seeded(&a, 10_000_000);
+        let tx = transfer_tx(&a, &b, 3_000_000);
+        let txid = tron_chain::tx_id(&tx);
+        let block = protocol::Block {
+            block_header: Some(protocol::BlockHeader {
+                raw_data: Some(protocol::block_header::Raw { number: 1, ..Default::default() }),
+                ..Default::default()
+            }),
+            transactions: vec![tx],
+        };
+
+        process_block(&mut ws, &block).unwrap();
+
+        // state transition applied
+        assert_eq!(ws.get_account(&b).unwrap().unwrap().balance, 3_000_000);
+        // block persisted + head advanced
+        assert_eq!(ws.get_block_by_num(1).unwrap().unwrap()
+            .block_header.unwrap().raw_data.unwrap().number, 1);
+        // transaction indexed by id
+        assert!(ws.get_transaction(&txid.0).unwrap().is_some());
     }
 
     #[test]

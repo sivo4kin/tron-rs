@@ -11,6 +11,7 @@ tron-proto.workspace = true
 tron-state.workspace = true
 tron-consensus.workspace = true
 tron-vm.workspace = true
+tron-chain.workspace = true
 tron-storage.workspace = true
 thiserror.workspace = true
 prost.workspace = true
