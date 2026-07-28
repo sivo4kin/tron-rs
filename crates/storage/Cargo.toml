@@ -7,9 +7,13 @@ authors.workspace = true
 
 [dependencies]
 thiserror.workspace = true
+rocksdb = { workspace = true, optional = true }
 
 [features]
 default = []
 # P1: enable a RocksDB-backed KvStore behind this feature (matches the java-tron
 # JDK17 profile). Kept off by default so `cargo test` needs no native rocksdb build.
-rocksdb = []
+rocksdb = ["dep:rocksdb"]
+
+[dev-dependencies]
+tempfile.workspace = true

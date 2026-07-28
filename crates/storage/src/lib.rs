@@ -10,6 +10,11 @@ use std::collections::HashMap;
 use std::sync::RwLock;
 use thiserror::Error;
 
+#[cfg(feature = "rocksdb")]
+pub mod rocks;
+#[cfg(feature = "rocksdb")]
+pub use rocks::RocksStore;
+
 #[derive(Debug, Error)]
 pub enum StorageError {
     #[error("unknown column family: {0}")]
