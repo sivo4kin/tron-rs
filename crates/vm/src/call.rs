@@ -5,7 +5,7 @@
 //! otherwise the target's bytecode runs on the interpreter against its storage.
 //! This is the entry point contract-to-contract CALL and external invocation use.
 
-use crate::interp::{run, Halt, Host, Outcome};
+use crate::interp::{run_with_input, Halt, Host, Outcome};
 use crate::precompile;
 
 /// Result of a call: output bytes, energy consumed, and success flag.
@@ -38,8 +38,8 @@ pub fn call(
         return CallResult { success: true, output, energy_used: cost };
     }
 
-    // Not a precompile: execute bytecode.
-    let Outcome { halt, energy_used, .. } = run(code, energy_limit, host);
+    // Not a precompile: execute bytecode with the input as calldata.
+    let Outcome { halt, energy_used, .. } = run_with_input(code, input, energy_limit, host);
     let success = matches!(halt, Halt::Stop | Halt::Return);
     CallResult { success, output: vec![], energy_used }
 }

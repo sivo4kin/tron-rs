@@ -58,10 +58,49 @@ pub struct Outcome {
     pub energy_used: u64,
 }
 
-/// Run `code` with an energy `limit` against `host`.
+/// Run `code` with an energy `limit` against `host` (no calldata).
 pub fn run(code: &[u8], limit: u64, host: &mut dyn Host) -> Outcome {
+    run_with_input(code, &[], limit, host)
+}
+
+/// Byte-addressed memory that grows in 32-byte words, charging expansion energy.
+#[derive(Default)]
+struct Memory {
+    data: Vec<u8>,
+}
+
+impl Memory {
+    fn words(&self) -> u64 {
+        (self.data.len() as u64 + 31) / 32
+    }
+    /// Ensure at least `end` bytes exist; returns the expansion energy to charge.
+    fn expand_to(&mut self, end: usize) -> u64 {
+        if end <= self.data.len() {
+            return 0;
+        }
+        let cur = self.words();
+        let new_words = (end as u64 + 31) / 32;
+        self.data.resize((new_words * 32) as usize, 0);
+        crate::energy::memory_expansion_cost(cur, new_words)
+    }
+    fn load(&self, off: usize) -> U256 {
+        let mut buf = [0u8; 32];
+        for (i, b) in buf.iter_mut().enumerate() {
+            *b = self.data.get(off + i).copied().unwrap_or(0);
+        }
+        U256::from_big_endian(&buf)
+    }
+    fn store(&mut self, off: usize, val: U256) {
+        let bytes = val.to_big_endian();
+        self.data[off..off + 32].copy_from_slice(&bytes);
+    }
+}
+
+/// Run `code` with `calldata` and an energy `limit` against `host`.
+pub fn run_with_input(code: &[u8], calldata: &[u8], limit: u64, host: &mut dyn Host) -> Outcome {
     let mut meter = EnergyMeter::new(limit);
     let mut stack: Vec<U256> = Vec::new();
+    let mut mem = Memory::default();
     let mut pc = 0usize;
 
     macro_rules! pop {
@@ -125,6 +164,49 @@ pub fn run(code: &[u8], limit: u64, host: &mut dyn Host) -> Outcome {
                 pc += 1;
                 let v = *code.get(pc).unwrap_or(&0);
                 push!(U256::from(v));
+            }
+            OpCode::CallDataLoad => {
+                let off = pop!().low_u64() as usize;
+                let mut buf = [0u8; 32];
+                for (i, b) in buf.iter_mut().enumerate() {
+                    *b = calldata.get(off + i).copied().unwrap_or(0);
+                }
+                push!(U256::from_big_endian(&buf));
+            }
+            OpCode::CallDataSize => push!(U256::from(calldata.len())),
+            OpCode::CallDataCopy => {
+                let dest = pop!().low_u64() as usize;
+                let off = pop!().low_u64() as usize;
+                let len = pop!().low_u64() as usize;
+                if !meter.charge(mem.expand_to(dest.saturating_add(len))) {
+                    return done(Halt::OutOfEnergy, &stack, &meter);
+                }
+                for i in 0..len {
+                    mem.data[dest + i] = calldata.get(off + i).copied().unwrap_or(0);
+                }
+            }
+            OpCode::Mload => {
+                let off = pop!().low_u64() as usize;
+                if !meter.charge(mem.expand_to(off.saturating_add(32))) {
+                    return done(Halt::OutOfEnergy, &stack, &meter);
+                }
+                push!(mem.load(off));
+            }
+            OpCode::Mstore => {
+                let off = pop!().low_u64() as usize;
+                let val = pop!();
+                if !meter.charge(mem.expand_to(off.saturating_add(32))) {
+                    return done(Halt::OutOfEnergy, &stack, &meter);
+                }
+                mem.store(off, val);
+            }
+            OpCode::Mstore8 => {
+                let off = pop!().low_u64() as usize;
+                let val = pop!();
+                if !meter.charge(mem.expand_to(off.saturating_add(1))) {
+                    return done(Halt::OutOfEnergy, &stack, &meter);
+                }
+                mem.data[off] = (val.low_u64() & 0xff) as u8;
             }
             OpCode::Sload => {
                 let key = pop!();
@@ -247,6 +329,48 @@ mod tests {
             Jumpdest as u8, Push1 as u8, 9, Stop as u8,      // @7
         ];
         assert_eq!(run_mem(&code, 1000).halt, Halt::Stop);
+    }
+
+    #[test]
+    fn mstore_then_mload_roundtrips_and_charges_expansion() {
+        // PUSH1 42, PUSH1 0, MSTORE ; PUSH1 0, MLOAD -> 42
+        let code = [Push1 as u8, 42, Push1 as u8, 0, Mstore as u8, Push1 as u8, 0, Mload as u8, Stop as u8];
+        let out = run_mem(&code, 100000);
+        assert_eq!(out.halt, Halt::Stop);
+        assert_eq!(out.stack_top, Some(U256::from(42)));
+        // memory expansion (one word) was charged on top of the base costs
+        assert!(out.energy_used > 0);
+    }
+
+    #[test]
+    fn calldataload_reads_input_word() {
+        // CALLDATALOAD at offset 0 reads the first 32 bytes of calldata as a word
+        let code = [Push1 as u8, 0, CallDataLoad as u8, Stop as u8];
+        let mut calldata = [0u8; 32];
+        calldata[31] = 7; // big-endian -> value 7
+        let out = run_with_input(&code, &calldata, 100000, &mut MemoryHost::default());
+        assert_eq!(out.stack_top, Some(U256::from(7)));
+    }
+
+    #[test]
+    fn calldatasize_reports_input_length() {
+        let code = [CallDataSize as u8, Stop as u8];
+        let out = run_with_input(&code, &[0u8; 36], 1000, &mut MemoryHost::default());
+        assert_eq!(out.stack_top, Some(U256::from(36)));
+    }
+
+    #[test]
+    fn calldatacopy_into_memory_then_mload() {
+        // copy 32 bytes of calldata to mem[0], then MLOAD 0
+        // PUSH1 32(len) PUSH1 0(src) PUSH1 0(dest) CALLDATACOPY ; PUSH1 0 MLOAD
+        let code = [
+            Push1 as u8, 32, Push1 as u8, 0, Push1 as u8, 0, CallDataCopy as u8,
+            Push1 as u8, 0, Mload as u8, Stop as u8,
+        ];
+        let mut calldata = [0u8; 32];
+        calldata[31] = 99;
+        let out = run_with_input(&code, &calldata, 100000, &mut MemoryHost::default());
+        assert_eq!(out.stack_top, Some(U256::from(99)));
     }
 
     #[test]
