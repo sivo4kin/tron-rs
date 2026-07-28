@@ -22,7 +22,7 @@ pub enum SyncError {
 /// Returns the number applied. `require_sig` toggles the witness-signature check
 /// (off for signature-stripped gateway sources).
 pub fn apply_synced_blocks<S: KvStore>(
-    state: &mut WorldState<S>,
+    state: &WorldState<S>,
     blocks: &[Vec<u8>],
     require_sig: bool,
 ) -> Result<usize, SyncError> {
@@ -58,7 +58,7 @@ pub fn apply_synced_blocks<S: KvStore>(
 /// number of blocks applied (0 if no peer is ahead). Ties [`tron_p2p::peer`],
 /// the channel sync, and [`apply_synced_blocks`] together.
 pub async fn sync_from_best_peer<S: KvStore>(
-    state: &mut WorldState<S>,
+    state: &WorldState<S>,
     peers: &tron_p2p::peer::PeerManager,
     require_sig: bool,
 ) -> Result<usize, SyncError> {

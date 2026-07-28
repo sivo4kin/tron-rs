@@ -209,7 +209,7 @@ mod tests {
     }
 
     fn seeded(owner: &Address, balance: i64) -> WorldState<MemoryStore> {
-        let mut ws = WorldState::new(MemoryStore::new());
+        let ws = WorldState::new(MemoryStore::new());
         ws.put_account(
             owner,
             &protocol::Account {
@@ -253,7 +253,7 @@ mod tests {
     #[test]
     fn create_existing_target_rejected() {
         let (o, t) = (addr(1), addr(2));
-        let mut ws = seeded(&o, 1_000_000);
+        let ws = seeded(&o, 1_000_000);
         ws.create_account(&t).unwrap();
         let c = create_contract(&o, &t);
         assert_eq!(
@@ -265,7 +265,7 @@ mod tests {
     #[test]
     fn create_insufficient_fee_rejected() {
         let (o, t) = (addr(1), addr(2));
-        let mut ws = seeded(&o, 50_000);
+        let ws = seeded(&o, 50_000);
         ws.put_prop_i64(CREATE_ACCOUNT_FEE_KEY, 100_000).unwrap();
         let c = create_contract(&o, &t);
         assert!(matches!(

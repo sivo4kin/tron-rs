@@ -17,7 +17,7 @@ pub const LATEST_BLOCK_NUMBER: &str = "LATEST_BLOCK_HEADER_NUMBER";
 
 impl<S: KvStore> WorldState<S> {
     /// Persist a block by its header number and advance the head if it is newer.
-    pub fn put_block(&mut self, block: &protocol::Block) -> Result<(), StateError> {
+    pub fn put_block(&self, block: &protocol::Block) -> Result<(), StateError> {
         let number = block
             .block_header
             .as_ref()
@@ -46,7 +46,7 @@ impl<S: KvStore> WorldState<S> {
     }
 
     /// Persist a transaction by its 32-byte id (java-tron `TransactionStore`).
-    pub fn put_transaction(&mut self, txid: &[u8], tx: &protocol::Transaction) -> Result<(), StateError> {
+    pub fn put_transaction(&self, txid: &[u8], tx: &protocol::Transaction) -> Result<(), StateError> {
         self.db.put("transaction", txid, &tx.encode_to_vec())?;
         Ok(())
     }
@@ -59,7 +59,7 @@ impl<S: KvStore> WorldState<S> {
     }
 
     /// Index all of a block's transactions by id (called on block application).
-    pub fn index_block_transactions(&mut self, block: &protocol::Block) -> Result<(), StateError> {
+    pub fn index_block_transactions(&self, block: &protocol::Block) -> Result<(), StateError> {
         for tx in &block.transactions {
             let id = tron_chain::tx_id(tx);
             self.put_transaction(&id.0, tx)?;
@@ -102,7 +102,7 @@ mod tests {
 
     #[test]
     fn store_and_fetch_by_number() {
-        let mut ws = WorldState::new(MemoryStore::new());
+        let ws = WorldState::new(MemoryStore::new());
         ws.put_block(&block(5, 500)).unwrap();
         let got = ws.get_block_by_num(5).unwrap().unwrap();
         assert_eq!(got.block_header.unwrap().raw_data.unwrap().number, 5);
@@ -111,7 +111,7 @@ mod tests {
 
     #[test]
     fn head_tracks_highest_and_updates_timestamp() {
-        let mut ws = WorldState::new(MemoryStore::new());
+        let ws = WorldState::new(MemoryStore::new());
         ws.put_block(&block(1, 100)).unwrap();
         ws.put_block(&block(3, 300)).unwrap();
         ws.put_block(&block(2, 200)).unwrap(); // older, must not move head
@@ -123,7 +123,7 @@ mod tests {
 
     #[test]
     fn transaction_store_roundtrip_and_index() {
-        let mut ws = WorldState::new(MemoryStore::new());
+        let ws = WorldState::new(MemoryStore::new());
         let tx = protocol::Transaction {
             raw_data: Some(protocol::transaction::Raw { ref_block_num: 7, ..Default::default() }),
             ..Default::default()
@@ -142,7 +142,7 @@ mod tests {
 
     #[test]
     fn get_block_by_id_via_index() {
-        let mut ws = WorldState::new(MemoryStore::new());
+        let ws = WorldState::new(MemoryStore::new());
         let blk = block(9, 900);
         ws.put_block(&blk).unwrap();
         let id = tron_chain::block_id_of(&blk).unwrap();

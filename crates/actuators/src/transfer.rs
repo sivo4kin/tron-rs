@@ -132,7 +132,7 @@ mod tests {
     }
 
     fn seeded_state(owner: &Address, balance: i64) -> WorldState<MemoryStore> {
-        let mut ws = WorldState::new(MemoryStore::new());
+        let ws = WorldState::new(MemoryStore::new());
         let account = protocol::Account {
             address: owner.as_bytes().to_vec(),
             balance,
@@ -221,7 +221,7 @@ mod tests {
     #[test]
     fn rejects_insufficient_balance_including_create_fee() {
         let (o, t) = (addr(1), addr(2));
-        let mut ws = seeded_state(&o, 1_500_000);
+        let ws = seeded_state(&o, 1_500_000);
         ws.put_prop_i64(props::CREATE_NEW_ACCOUNT_FEE_IN_SYSTEM_CONTRACT, 1_000_000).unwrap();
         // amount alone fits, amount+create-fee does not
         let c = contract(&o, &t, 1_000_000);
@@ -234,7 +234,7 @@ mod tests {
     #[test]
     fn rejects_overflow_amount_plus_fee() {
         let (o, t) = (addr(1), addr(2));
-        let mut ws = seeded_state(&o, i64::MAX);
+        let ws = seeded_state(&o, i64::MAX);
         ws.put_prop_i64(props::CREATE_NEW_ACCOUNT_FEE_IN_SYSTEM_CONTRACT, 1).unwrap();
         let c = contract(&o, &t, i64::MAX);
         assert!(matches!(

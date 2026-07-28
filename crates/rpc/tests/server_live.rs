@@ -10,7 +10,7 @@ use tron_types::Address;
 #[tokio::test]
 async fn serves_getaccount_over_http() {
     let addr = Address::from_body([0x11; 20]);
-    let mut ws = WorldState::new(MemoryStore::new());
+    let ws = WorldState::new(MemoryStore::new());
     ws.put_account(
         &addr,
         &protocol::Account {

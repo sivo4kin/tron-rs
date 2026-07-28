@@ -775,7 +775,7 @@ mod tests {
     }
 
     fn state_with(account: protocol::Account) -> WorldState<MemoryStore> {
-        let mut ws = WorldState::new(MemoryStore::new());
+        let ws = WorldState::new(MemoryStore::new());
         let owner = Address::from_bytes(account.address.clone().try_into().unwrap()).unwrap();
         ws.put_account(&owner, &account).unwrap();
         ws.put_prop_i64(props::LATEST_BLOCK_HEADER_TIMESTAMP, 1_700_000_000_000).unwrap();

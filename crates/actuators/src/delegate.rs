@@ -575,7 +575,7 @@ mod tests {
 
     /// World state with `now` set and `owner` seeded with `frozen` sun of `resource`.
     fn state_with_owner(owner: &Address, resource: i32, frozen: i64) -> WorldState<MemoryStore> {
-        let mut ws = WorldState::new(MemoryStore::new());
+        let ws = WorldState::new(MemoryStore::new());
         ws.put_prop_i64(props::LATEST_BLOCK_HEADER_TIMESTAMP, NOW).unwrap();
         let account = protocol::Account {
             address: owner.as_bytes().to_vec(),

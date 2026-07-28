@@ -74,7 +74,7 @@ impl<S: KvStore> WorldState<S> {
     }
 
     pub fn put_account(
-        &mut self,
+        &self,
         addr: &Address,
         account: &protocol::Account,
     ) -> Result<(), StateError> {
@@ -89,7 +89,7 @@ impl<S: KvStore> WorldState<S> {
 
     /// Create a fresh Normal account (java-tron `AccountCapsule` defaults):
     /// zero balance, creation time = latest block timestamp.
-    pub fn create_account(&mut self, addr: &Address) -> Result<protocol::Account, StateError> {
+    pub fn create_account(&self, addr: &Address) -> Result<protocol::Account, StateError> {
         let account = protocol::Account {
             address: addr.as_bytes().to_vec(),
             r#type: protocol::AccountType::Normal as i32,
@@ -103,7 +103,7 @@ impl<S: KvStore> WorldState<S> {
     // -- contract code ----------------------------------------------------
 
     /// Store deployed bytecode for a contract address (java-tron `CodeStore`).
-    pub fn put_code(&mut self, addr: &Address, code: &[u8]) -> Result<(), StateError> {
+    pub fn put_code(&self, addr: &Address, code: &[u8]) -> Result<(), StateError> {
         self.db.put(cf::CONTRACT_CODE, addr.as_bytes(), code).map_err(Into::into)
     }
 
@@ -123,14 +123,14 @@ impl<S: KvStore> WorldState<S> {
         }
     }
 
-    pub fn put_prop_i64(&mut self, key: &str, value: i64) -> Result<(), StateError> {
+    pub fn put_prop_i64(&self, key: &str, value: i64) -> Result<(), StateError> {
         self.db
             .put(cf::DYNAMIC_PROPERTIES, key.as_bytes(), &value.to_be_bytes())
             .map_err(Into::into)
     }
 
     /// Burn TRX (blackhole-optimization path): accumulate into `BURN_TRX_AMOUNT`.
-    pub fn burn_trx(&mut self, amount: i64) -> Result<(), StateError> {
+    pub fn burn_trx(&self, amount: i64) -> Result<(), StateError> {
         let total = self.get_prop_i64(props::BURN_TRX_AMOUNT)?;
         self.put_prop_i64(props::BURN_TRX_AMOUNT, total.saturating_add(amount))
     }
@@ -147,7 +147,7 @@ mod tests {
 
     #[test]
     fn account_roundtrip_prost_encoding() {
-        let mut ws = WorldState::new(MemoryStore::new());
+        let ws = WorldState::new(MemoryStore::new());
         let a = addr(1);
         assert_eq!(ws.get_account(&a).unwrap(), None);
 
@@ -164,7 +164,7 @@ mod tests {
 
     #[test]
     fn create_account_defaults() {
-        let mut ws = WorldState::new(MemoryStore::new());
+        let ws = WorldState::new(MemoryStore::new());
         ws.put_prop_i64(props::LATEST_BLOCK_HEADER_TIMESTAMP, 1_700_000_000_000).unwrap();
         let a = addr(2);
         let created = ws.create_account(&a).unwrap();
@@ -176,7 +176,7 @@ mod tests {
 
     #[test]
     fn props_default_zero_and_roundtrip() {
-        let mut ws = WorldState::new(MemoryStore::new());
+        let ws = WorldState::new(MemoryStore::new());
         assert_eq!(ws.get_prop_i64(props::BURN_TRX_AMOUNT).unwrap(), 0);
         ws.put_prop_i64(props::CREATE_NEW_ACCOUNT_FEE_IN_SYSTEM_CONTRACT, 1_000_000).unwrap();
         assert_eq!(
@@ -187,7 +187,7 @@ mod tests {
 
     #[test]
     fn burn_accumulates() {
-        let mut ws = WorldState::new(MemoryStore::new());
+        let ws = WorldState::new(MemoryStore::new());
         ws.burn_trx(100).unwrap();
         ws.burn_trx(50).unwrap();
         assert_eq!(ws.get_prop_i64(props::BURN_TRX_AMOUNT).unwrap(), 150);

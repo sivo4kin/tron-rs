@@ -414,7 +414,7 @@ mod tests {
     use tron_storage::MemoryStore;
 
     fn seeded() -> (WorldState<MemoryStore>, Address) {
-        let mut ws = WorldState::new(MemoryStore::new());
+        let ws = WorldState::new(MemoryStore::new());
         let addr = Address::from_body([0x11; 20]);
         ws.put_account(
             &addr,
@@ -461,7 +461,7 @@ mod tests {
 
     #[test]
     fn get_now_block_and_by_num() {
-        let mut ws = WorldState::new(MemoryStore::new());
+        let ws = WorldState::new(MemoryStore::new());
         let blk = protocol::Block {
             block_header: Some(protocol::BlockHeader {
                 raw_data: Some(protocol::block_header::Raw {
@@ -498,7 +498,7 @@ mod tests {
 
     #[test]
     fn get_block_by_latest_num_returns_recent_blocks() {
-        let mut ws = WorldState::new(MemoryStore::new());
+        let ws = WorldState::new(MemoryStore::new());
         for n in 1..=5i64 {
             ws.put_block(&protocol::Block {
                 block_header: Some(protocol::BlockHeader {
@@ -517,7 +517,7 @@ mod tests {
 
     #[test]
     fn chain_parameters_reads_dynamic_props() {
-        let mut ws = WorldState::new(MemoryStore::new());
+        let ws = WorldState::new(MemoryStore::new());
         ws.put_prop_i64("ENERGY_FEE", 140).unwrap();
         let resp = get_chain_parameters(&ws);
         let params = resp["chainParameter"].as_array().unwrap();
@@ -538,7 +538,7 @@ mod tests {
 
     #[test]
     fn get_contract_returns_bytecode() {
-        let mut ws = WorldState::new(MemoryStore::new());
+        let ws = WorldState::new(MemoryStore::new());
         let addr = Address::from_body([0xcc; 20]);
         ws.put_code(&addr, &[0x60, 0x00]).unwrap();
         let resp = get_contract(&ws, &json!({ "value": addr.to_hex() }));
@@ -550,7 +550,7 @@ mod tests {
 
     #[test]
     fn get_transaction_by_id_returns_stored_tx() {
-        let mut ws = WorldState::new(MemoryStore::new());
+        let ws = WorldState::new(MemoryStore::new());
         let tx = protocol::Transaction {
             raw_data: Some(protocol::transaction::Raw { ref_block_num: 5, ..Default::default() }),
             signature: vec![vec![0u8; 65]],
@@ -591,7 +591,7 @@ mod tests {
 
     #[test]
     fn get_block_by_id_endpoint() {
-        let mut ws = WorldState::new(MemoryStore::new());
+        let ws = WorldState::new(MemoryStore::new());
         let blk = protocol::Block {
             block_header: Some(protocol::BlockHeader {
                 raw_data: Some(protocol::block_header::Raw { number: 12, ..Default::default() }),
@@ -637,7 +637,7 @@ mod tests {
 
     #[test]
     fn account_resource_from_frozen_v2() {
-        let mut ws = WorldState::new(MemoryStore::new());
+        let ws = WorldState::new(MemoryStore::new());
         let addr = Address::from_body([0x33; 20]);
         ws.put_account(&addr, &protocol::Account {
             address: addr.as_bytes().to_vec(),
@@ -658,7 +658,7 @@ mod tests {
 
     #[test]
     fn dynamic_property_endpoints() {
-        let mut ws = WorldState::new(MemoryStore::new());
+        let ws = WorldState::new(MemoryStore::new());
         ws.put_prop_i64("BURN_TRX_AMOUNT", 42).unwrap();
         ws.put_prop_i64("NEXT_MAINTENANCE_TIME", 1000).unwrap();
         ws.put_prop_i64("TOTAL_TRANSACTION", 99).unwrap();
@@ -672,7 +672,7 @@ mod tests {
 
     #[test]
     fn reward_and_brokerage_endpoints() {
-        let mut ws = WorldState::new(MemoryStore::new());
+        let ws = WorldState::new(MemoryStore::new());
         let addr = Address::from_body([0x55; 20]);
         ws.put_account(&addr, &protocol::Account {
             address: addr.as_bytes().to_vec(), allowance: 777, ..Default::default()
@@ -687,7 +687,7 @@ mod tests {
 
     #[test]
     fn pricing_endpoints() {
-        let mut ws = WorldState::new(MemoryStore::new());
+        let ws = WorldState::new(MemoryStore::new());
         assert_eq!(get_energy_prices(&ws)["prices"], "0:100"); // default
         ws.put_prop_i64("ENERGY_FEE", 140).unwrap();
         assert_eq!(get_energy_prices(&ws)["prices"], "0:140");

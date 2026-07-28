@@ -48,7 +48,7 @@ fn sequential_blocks_validate_and_chain_link() {
     let blocks = contiguous_nile_blocks();
     assert!(blocks.len() >= 5, "need a contiguous run of real blocks, got {}", blocks.len());
 
-    let mut ws = WorldState::new(MemoryStore::new());
+    let ws = WorldState::new(MemoryStore::new());
     let opts = ValidationOptions { require_witness_signature: false }; // Nile strips sigs
     let mut prev_id: Option<Vec<u8>> = None;
     let mut prev_num: Option<i64> = None;

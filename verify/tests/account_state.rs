@@ -45,7 +45,7 @@ fn real_accounts_reencode_byte_identically() {
 
 #[test]
 fn real_accounts_roundtrip_through_world_state() {
-    let mut ws = WorldState::new(MemoryStore::new());
+    let ws = WorldState::new(MemoryStore::new());
     for (name, bytes) in account_fixtures() {
         let account = protocol::Account::decode(bytes.as_slice()).unwrap();
         let arr: [u8; ADDRESS_LEN] = account.address.as_slice().try_into().unwrap();

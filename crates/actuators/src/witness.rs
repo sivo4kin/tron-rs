@@ -242,7 +242,7 @@ mod tests {
 
     /// Fresh state with `owner` as an existing account holding `balance`.
     fn seeded_state(owner: &Address, balance: i64) -> WorldState<MemoryStore> {
-        let mut ws = WorldState::new(MemoryStore::new());
+        let ws = WorldState::new(MemoryStore::new());
         let account = protocol::Account {
             address: owner.as_bytes().to_vec(),
             balance,
@@ -357,7 +357,7 @@ mod tests {
     #[test]
     fn create_url_too_long_rejected() {
         let o = addr(1);
-        let mut ws = seeded_state(&o, 500_000_000);
+        let ws = seeded_state(&o, 500_000_000);
         ws.put_prop_i64(ACCOUNT_UPGRADE_COST, 100_000_000).unwrap();
         let c = create_contract(&o, &vec![b'a'; MAX_URL_LEN + 1]); // 257 bytes
         assert!(matches!(
@@ -372,7 +372,7 @@ mod tests {
     #[test]
     fn create_insufficient_balance_rejected() {
         let o = addr(1);
-        let mut ws = seeded_state(&o, 50_000_000);
+        let ws = seeded_state(&o, 50_000_000);
         ws.put_prop_i64(ACCOUNT_UPGRADE_COST, 100_000_000).unwrap();
         let c = create_contract(&o, b"url");
         assert!(matches!(

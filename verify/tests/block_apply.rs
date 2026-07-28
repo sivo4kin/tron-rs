@@ -19,7 +19,7 @@ use tron_types::{Address, ADDRESS_LEN};
 /// Seed a state where the tx's owner holds a large balance (so transfers/fees have
 /// headroom) — isolates dispatch/unpack robustness from insufficient-funds noise.
 fn seed_for(tx: &protocol::Transaction) -> WorldState<MemoryStore> {
-    let mut ws = WorldState::new(MemoryStore::new());
+    let ws = WorldState::new(MemoryStore::new());
     ws.put_prop_i64(tron_state::props::CREATE_NEW_ACCOUNT_FEE_IN_SYSTEM_CONTRACT, 0)
         .unwrap();
     if let Some(owner) = tron_chain::tx_owner_address(tx) {

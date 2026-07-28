@@ -248,7 +248,7 @@ mod tests {
     }
 
     fn seeded(owner: &Address, balance: i64) -> WorldState<MemoryStore> {
-        let mut ws = WorldState::new(MemoryStore::new());
+        let ws = WorldState::new(MemoryStore::new());
         ws.put_account(
             owner,
             &protocol::Account {

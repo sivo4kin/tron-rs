@@ -202,7 +202,7 @@ mod tests {
 
     /// World state with an owner holding `trx` sun and `asset` of `ASSET`.
     fn seeded_state(owner: &Address, trx: i64, asset: i64) -> WorldState<MemoryStore> {
-        let mut ws = WorldState::new(MemoryStore::new());
+        let ws = WorldState::new(MemoryStore::new());
         ws.put_account(owner, &account(owner, trx, asset)).unwrap();
         ws
     }
@@ -342,7 +342,7 @@ mod tests {
     fn rejects_insufficient_fee_for_new_account() {
         // Owner has plenty of asset but cannot cover the create-account fee.
         let (o, t) = (addr(1), addr(2));
-        let mut ws = seeded_state(&o, 500_000, 1_000);
+        let ws = seeded_state(&o, 500_000, 1_000);
         ws.put_prop_i64(props::CREATE_NEW_ACCOUNT_FEE_IN_SYSTEM_CONTRACT, 1_000_000)
             .unwrap();
         let c = contract(&o, &t, ASSET, 10);
@@ -356,7 +356,7 @@ mod tests {
     fn rejects_asset_credit_overflow() {
         // Target already holds i64::MAX of the asset; any credit overflows.
         let (o, t) = (addr(1), addr(2));
-        let mut ws = seeded_state(&o, 10_000_000, 1_000);
+        let ws = seeded_state(&o, 10_000_000, 1_000);
         ws.put_account(&t, &account(&t, 0, i64::MAX)).unwrap();
         let c = contract(&o, &t, ASSET, 1);
         assert!(matches!(

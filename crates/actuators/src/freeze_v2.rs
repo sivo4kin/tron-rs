@@ -321,7 +321,7 @@ mod tests {
     }
 
     fn seeded_state(owner: &Address, balance: i64) -> WorldState<MemoryStore> {
-        let mut ws = WorldState::new(MemoryStore::new());
+        let ws = WorldState::new(MemoryStore::new());
         let account = protocol::Account {
             address: owner.as_bytes().to_vec(),
             balance,

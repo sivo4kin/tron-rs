@@ -26,7 +26,7 @@ fn genesis() -> tron_proto::protocol::Block {
 async fn node_b_syncs_node_a_chain_over_tcp() {
     // --- Node A: build and store a 3-block chain on top of genesis. ---
     let sk = SecretKey::from_slice(&[0x77u8; 32]).unwrap();
-    let mut a = WorldState::new(MemoryStore::new());
+    let a = WorldState::new(MemoryStore::new());
     a.put_block(&genesis()).unwrap();
 
     let mut parent = genesis();
@@ -51,7 +51,7 @@ async fn node_b_syncs_node_a_chain_over_tcp() {
         serve_sync(&mut sock, &[1, 2, 3], move |n| a_blocks.get(&n).cloned()).await.unwrap()
     });
 
-    let mut b = WorldState::new(MemoryStore::new());
+    let b = WorldState::new(MemoryStore::new());
     b.put_block(&genesis()).unwrap();
 
     let mut client = tokio::net::TcpStream::connect(addr).await.unwrap();

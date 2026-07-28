@@ -93,7 +93,7 @@ mod tests {
     }
 
     fn seed(owner: &Address, entries: Vec<protocol::account::UnFreezeV2>, now: i64) -> WorldState<MemoryStore> {
-        let mut ws = WorldState::new(MemoryStore::new());
+        let ws = WorldState::new(MemoryStore::new());
         ws.put_prop_i64(props::LATEST_BLOCK_HEADER_TIMESTAMP, now).unwrap();
         ws.put_account(owner, &protocol::Account {
             address: owner.as_bytes().to_vec(),

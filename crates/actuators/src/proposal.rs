@@ -353,7 +353,7 @@ mod tests {
 
     /// A fresh state with `owner` as an existing account and (optionally) witness.
     fn seeded_state(owner: &Address, is_witness: bool) -> WorldState<MemoryStore> {
-        let mut ws = WorldState::new(MemoryStore::new());
+        let ws = WorldState::new(MemoryStore::new());
         let account = protocol::Account {
             address: owner.as_bytes().to_vec(),
             balance: 1_000_000_000,
@@ -570,7 +570,7 @@ mod tests {
     #[test]
     fn approve_expired_rejected() {
         let o = addr(1);
-        let mut ws = with_proposal(&o);
+        let ws = with_proposal(&o);
         // Advance the clock past the proposal's expiration.
         let expire = get_proposal(&ws, 1).unwrap().unwrap().expiration_time;
         ws.put_prop_i64(props::LATEST_BLOCK_HEADER_TIMESTAMP, expire + 1).unwrap();
@@ -584,7 +584,7 @@ mod tests {
     #[test]
     fn approve_by_non_witness_rejected() {
         let o = addr(1);
-        let mut ws = with_proposal(&o);
+        let ws = with_proposal(&o);
         // A second account that exists but is not a witness.
         let other = addr(2);
         let acct = protocol::Account {
@@ -616,7 +616,7 @@ mod tests {
     #[test]
     fn delete_by_other_rejected() {
         let o = addr(1);
-        let mut ws = with_proposal(&o);
+        let ws = with_proposal(&o);
         // Another account (must exist to pass the account check).
         let other = addr(2);
         let acct = protocol::Account {
