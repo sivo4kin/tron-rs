@@ -8,3 +8,6 @@ authors.workspace = true
 [dependencies]
 tron-types.workspace = true
 tron-proto.workspace = true
+tron-chain.workspace = true
+thiserror.workspace = true
+hex.workspace = true

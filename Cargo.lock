@@ -1459,6 +1459,9 @@ dependencies = [
 name = "tron-consensus"
 version = "0.0.1"
 dependencies = [
+ "hex",
+ "thiserror",
+ "tron-chain",
  "tron-proto",
  "tron-types",
 ]
@@ -1563,6 +1566,7 @@ dependencies = [
  "tonic",
  "tron-actuators",
  "tron-chain",
+ "tron-consensus",
  "tron-proto",
  "tron-state",
  "tron-storage",

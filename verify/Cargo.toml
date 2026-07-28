@@ -13,6 +13,7 @@ path = "src/bin/capture.rs"
 [dependencies]
 tron-proto.workspace = true
 tron-chain.workspace = true
+tron-consensus.workspace = true
 tron-types.workspace = true
 tron-actuators.workspace = true
 tron-state.workspace = true

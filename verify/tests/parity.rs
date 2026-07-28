@@ -127,6 +127,61 @@ fn tx_signatures_recover_to_owner_address() {
 }
 
 #[test]
+fn full_block_validation_passes_on_real_blocks() {
+    use tron_consensus::validation::{validate_block, ValidationOptions};
+    for name in tron_verify::fixture_names().unwrap() {
+        let block = tron_verify::load_block(&name).unwrap();
+        let has_sig = block
+            .block_header
+            .as_ref()
+            .is_some_and(|h| !h.witness_signature.is_empty());
+        // Nile-gateway blocks arrive signature-stripped; require the signature
+        // wherever it is present (mainnet).
+        let opts = ValidationOptions { require_witness_signature: has_sig };
+        validate_block(&block, opts)
+            .unwrap_or_else(|e| panic!("real block {name} failed validation: {e}"));
+    }
+}
+
+#[test]
+fn block_validation_rejects_tampered_blocks() {
+    use tron_consensus::validation::{validate_block, BlockValidationError, ValidationOptions};
+    // Take a real mainnet block and corrupt it in targeted ways.
+    let name = tron_verify::fixture_names()
+        .unwrap()
+        .into_iter()
+        .find(|n| n.starts_with("mainnet-"))
+        .expect("mainnet fixture");
+    let original = tron_verify::load_block(&name).unwrap();
+    let opts = ValidationOptions { require_witness_signature: true };
+
+    // 1. Drop a transaction -> txTrieRoot mismatch.
+    let mut tampered = original.clone();
+    tampered.transactions.pop();
+    assert!(matches!(
+        validate_block(&tampered, opts),
+        Err(BlockValidationError::TxTrieRootMismatch { .. })
+    ));
+
+    // 2. Flip a signature byte -> witness mismatch (or unrecoverable).
+    let mut tampered = original.clone();
+    if let Some(h) = tampered.block_header.as_mut() {
+        h.witness_signature[10] ^= 0xff;
+    }
+    assert!(validate_block(&tampered, opts).is_err());
+
+    // 3. Truncate the signature -> malformed.
+    let mut tampered = original.clone();
+    if let Some(h) = tampered.block_header.as_mut() {
+        h.witness_signature.truncate(64);
+    }
+    assert_eq!(
+        validate_block(&tampered, opts),
+        Err(BlockValidationError::BadWitnessSignature(64))
+    );
+}
+
+#[test]
 fn tx_ids_are_nonzero_and_unique() {
     for name in tron_verify::fixture_names().unwrap() {
         let block = tron_verify::load_block(&name).unwrap();
