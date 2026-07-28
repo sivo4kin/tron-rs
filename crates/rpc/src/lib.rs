@@ -4,6 +4,8 @@
 //! conformance-tested against a java-tron reference node. gRPC reuses the generated
 //! `tron-proto` service stubs. Default ports mirror java-tron.
 
+pub mod http;
+
 /// Default HTTP fullnode port.
 pub const DEFAULT_HTTP_PORT: u16 = 8090;
 /// Default gRPC fullnode port.
