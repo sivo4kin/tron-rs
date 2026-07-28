@@ -59,6 +59,8 @@ pub fn router_with_state<S: KvStore + 'static>(state: NodeState<S>) -> Router {
         .route("/wallet/getblockbynum", post(get_block_by_num::<S>))
         .route("/wallet/getblockbylatestnum", post(get_block_by_latest_num::<S>))
         .route("/wallet/getblockbyid", post(get_block_by_id::<S>))
+        .route("/wallet/gettransactioncountbyblocknum", post(get_tx_count_by_block::<S>))
+        .route("/wallet/getblockbylimitnext", post(get_block_by_limit_next::<S>))
         .route("/wallet/getcontract", post(get_contract::<S>))
         .route("/wallet/gettransactionbyid", post(get_transaction_by_id::<S>))
         .route("/wallet/getchainparameters", post(get_chain_parameters::<S>))
@@ -92,6 +94,14 @@ async fn get_block_by_latest_num<S: KvStore>(
     Json(req): Json<Value>,
 ) -> Json<Value> {
     Json(http::get_block_by_latest_num(&state, &req))
+}
+
+async fn get_tx_count_by_block<S: KvStore>(State(state): State<AppState<S>>, Json(req): Json<Value>) -> Json<Value> {
+    Json(http::get_transaction_count_by_block_num(&state, &req))
+}
+
+async fn get_block_by_limit_next<S: KvStore>(State(state): State<AppState<S>>, Json(req): Json<Value>) -> Json<Value> {
+    Json(http::get_block_by_limit_next(&state, &req))
 }
 
 async fn get_block_by_id<S: KvStore>(

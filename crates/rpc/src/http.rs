@@ -277,6 +277,33 @@ pub fn get_block_by_id<S: KvStore>(state: &WorldState<S>, req: &Value) -> Value 
 }
 
 
+/// `POST /wallet/gettransactioncountbyblocknum` — body `{ "num": n }`.
+pub fn get_transaction_count_by_block_num<S: KvStore>(state: &WorldState<S>, req: &Value) -> Value {
+    let num = req.get("num").and_then(Value::as_i64).unwrap_or(-1);
+    match state.get_block_by_num(num) {
+        Ok(Some(b)) => json!({ "count": b.transactions.len() }),
+        _ => json!({ "count": 0 }),
+    }
+}
+
+/// `POST /wallet/getblockbylimitnext` — body `{ "startNum": s, "endNum": e }`.
+/// Returns blocks in `[startNum, endNum)` (java-tron caps the span; here <= 100).
+pub fn get_block_by_limit_next<S: KvStore>(state: &WorldState<S>, req: &Value) -> Value {
+    let start = req.get("startNum").and_then(Value::as_i64).unwrap_or(0);
+    let end = req.get("endNum").and_then(Value::as_i64).unwrap_or(0);
+    if end <= start || end - start > 100 {
+        return error("request block num error");
+    }
+    let mut blocks = Vec::new();
+    for n in start..end {
+        if let Ok(Some(b)) = state.get_block_by_num(n) {
+            blocks.push(block_to_json(&b));
+        }
+    }
+    json!({ "block": blocks })
+}
+
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -474,5 +501,34 @@ mod tests {
         let resp = get_block_by_id(&ws, &json!({ "value": id.to_hex() }));
         assert_eq!(resp["block_header"]["raw_data"]["number"], 12);
         assert_eq!(get_block_by_id(&ws, &json!({ "value": "00" })), json!({}));
+    }
+
+    fn store_blocks(ws: &mut WorldState<MemoryStore>, nums: &[i64], txs: usize) {
+        for &n in nums {
+            ws.put_block(&protocol::Block {
+                block_header: Some(protocol::BlockHeader {
+                    raw_data: Some(protocol::block_header::Raw { number: n, ..Default::default() }),
+                    ..Default::default()
+                }),
+                transactions: vec![protocol::Transaction::default(); txs],
+            }).unwrap();
+        }
+    }
+
+    #[test]
+    fn tx_count_by_block_num() {
+        let mut ws = WorldState::new(MemoryStore::new());
+        store_blocks(&mut ws, &[5], 3);
+        assert_eq!(get_transaction_count_by_block_num(&ws, &json!({ "num": 5 }))["count"], 3);
+        assert_eq!(get_transaction_count_by_block_num(&ws, &json!({ "num": 9 }))["count"], 0);
+    }
+
+    #[test]
+    fn block_by_limit_next_range() {
+        let mut ws = WorldState::new(MemoryStore::new());
+        store_blocks(&mut ws, &[1, 2, 3, 4], 0);
+        let resp = get_block_by_limit_next(&ws, &json!({ "startNum": 1, "endNum": 4 }));
+        assert_eq!(resp["block"].as_array().unwrap().len(), 3); // 1,2,3
+        assert!(get_block_by_limit_next(&ws, &json!({ "startNum": 4, "endNum": 1 }))["Error"].is_string());
     }
 }
