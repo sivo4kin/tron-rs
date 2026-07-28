@@ -8,6 +8,9 @@ use thiserror::Error;
 use tron_state::StateError;
 
 pub mod account;
+pub mod delegate;
+pub mod exchange;
+pub mod maintenance;
 pub mod asset_transfer;
 pub mod executor;
 pub mod freeze_v2;
