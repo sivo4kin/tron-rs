@@ -7,6 +7,10 @@
 //! spike validates that revm's gas model can host Tron's energy meter; the fallback
 //! is a clean-room Sputnik-style VM. This crate holds the energy meter today.
 
+pub mod energy;
+pub mod interp;
+pub mod opcode;
+
 /// Energy is Tron's gas. Default price is 100 sun/energy (governance-adjustable).
 pub const DEFAULT_ENERGY_FEE_SUN: i64 = 100;
 
