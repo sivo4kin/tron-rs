@@ -6,18 +6,22 @@ for the design, testing strategy, and phased roadmap.
 
 ## Status
 
-Foundational, end-to-end-tested cores across **all six SPEC phases** (P0–P5). **269 tests green**,
-every commit pushed. This is a coherent node skeleton where the layers compose — not yet a
-production node (see [Honest scope](#honest-scope)).
+Foundational, end-to-end-tested cores across **all six SPEC phases** (P0–P5), tied into a genuinely
+functional (not yet production-hardened) node. **312 tests green, 0 warnings**, every commit pushed.
+The layers compose — two nodes sync a block chain over real TCP, and the write path runs
+broadcast → mempool → block production (see [Honest scope](#honest-scope)).
 
 | Phase | State | Landed |
 |---|---|---|
 | **P0** Scaffold | ✅ | 12-crate workspace, proto codegen, booting node |
-| **P1** Chain & state | core done | 19 contract types routed; typed state stores; genesis init; block store; structural block validation; RocksDB backend |
-| **P2** TVM | core done | opcodes + energy (byte-exact), U256 interpreter with **memory + calldata + stateful storage**, precompiles (incl. ecrecover), unified CALL dispatch, **smart-contract execution with energy→sun fees** |
-| **P3** Networking + consensus | core done | wire message codec, block-sync logic, Kademlia distance, **fork choice + reorg**, **PBFT finality**, DPoS election + timing + witness scheduling |
-| **P4** APIs | serving | HTTP handlers over real state **bound on an axum socket** (getaccount/getnowblock/getblockbynum) — the tron-openapi contract |
-| **P5** SR block production | core done | block assembly + signing (**produce→validate round-trip**), mempool, reward distribution |
+| **P1** Chain & state | core done | 20 contract types routed; typed state stores; genesis init; block + transaction stores; `process_block` (state + store + tx index); structural block validation; RocksDB backend |
+| **P2** TVM | core done | opcodes + energy (byte-exact), U256 interpreter with **memory + calldata + return-data**, precompiles (incl. ecrecover), CALL dispatch, **journaled contract-to-contract CALL with revert + EIP-150 gas forwarding**, smart-contract execution with energy→sun fees |
+| **P3** Networking + consensus | core done | wire codec, **end-to-end block sync over live TCP** + a validating sync driver, Kademlia distance, **fork choice + reorg**, **PBFT finality**, DPoS election/timing/scheduling |
+| **P4** APIs | serving | **23 HTTP endpoints** (read + write path incl. `broadcasthex`→mempool) over real state, **bound on an axum socket**, served by the node binary — the tron-openapi contract |
+| **P5** SR block production | core done | block assembly + signing (**produce→validate round-trip**), mempool, **production consumes the mempool**, reward distribution |
+
+**Cross-node integration:** node A produces a block chain and node B **syncs it over a real TCP socket
+and stores it**, ending with matching heads and per-block ids.
 
 ### Verified against real java-tron data
 
