@@ -33,7 +33,7 @@ pub fn base_cost(op: OpCode) -> u64 {
         Stop | Return | Revert | Invalid => ZERO_TIER,
         Add | Sub | Lt | Gt | Eq | IsZero | And | Or | Xor | Pop => VERY_LOW_TIER,
         Mul | Div | Sdiv | Mod => LOW_TIER,
-        Push1 | Dup1 | Swap1 => VERY_LOW_TIER,
+        Push1 | Push2 | Dup1 | Swap1 => VERY_LOW_TIER,
         Jumpdest => 1,
         Jump => MID_TIER,
         Jumpi => HIGH_TIER,

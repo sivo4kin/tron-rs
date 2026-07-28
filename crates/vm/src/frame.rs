@@ -138,6 +138,12 @@ pub fn execute(
             OpCode::Stop => return CallResult { success: true, halt: Halt::Stop, energy_used: meter.used },
             OpCode::Add => { let (a,b)=(pop!(),pop!()); stack.push(a.overflowing_add(b).0); }
             OpCode::Push1 => { pc += 1; stack.push(U256::from(*code.get(pc).unwrap_or(&0))); }
+            OpCode::Push2 => {
+                let hi = *code.get(pc + 1).unwrap_or(&0) as u16;
+                let lo = *code.get(pc + 2).unwrap_or(&0) as u16;
+                pc += 2;
+                stack.push(U256::from((hi << 8) | lo));
+            }
             OpCode::Sload => { let k = pop!(); stack.push(world.sload(address, k)); }
             OpCode::Sstore => {
                 let k = pop!(); let v = pop!();
@@ -152,14 +158,21 @@ pub fn execute(
                     return CallResult { success: false, halt: Halt::StackUnderflow, energy_used: meter.used };
                 }
                 let callee = pop!();
-                let _gas = pop!(); // gas forwarding (all-but-64th rule) is a follow-up
+                let requested_gas = pop!();
                 // Address = low 20 bytes of the callee word.
                 let buf = callee.to_big_endian();
                 let callee_addr = buf[12..].to_vec();
 
-                // Checkpoint, run the sub-call with the remaining energy, revert on failure.
+                // EIP-150 all-but-64th: forward at most 63/64 of the remaining
+                // energy, so the caller always retains >= 1/64 to continue after
+                // the sub-call returns. The requested gas caps it further.
+                let remaining = meter.remaining();
+                let max_forward = remaining - remaining / 64;
+                let forwarded = requested_gas.low_u64().min(max_forward);
+
+                // Checkpoint, run the sub-call with the forwarded energy, revert on failure.
                 let cp = world.checkpoint();
-                let sub = execute(world, &callee_addr, meter.remaining(), depth + 1);
+                let sub = execute(world, &callee_addr, forwarded, depth + 1);
                 let _ = meter.charge(sub.energy_used);
                 if sub.success {
                     world.commit(cp);
@@ -209,7 +222,8 @@ mod tests {
         };
         world.set_code(&b1, world.get_code(&b));
         // A: PUSH1 gas(gas=200 via 0xc8), PUSH1 0x07(addr word low byte), CALL, STOP
-        world.set_code(&a, vec![Push1 as u8, 0xff, Push1 as u8, 0x07, Call as u8, Stop as u8]);
+        // A: PUSH2 0xffff (gas), PUSH1 0x07 (addr), CALL, STOP
+        world.set_code(&a, vec![Push2 as u8, 0xff, 0xff, Push1 as u8, 0x07, Call as u8, Stop as u8]);
         let cp = world.checkpoint();
         let r = execute(&mut world, &a, 1_000_000, 0);
         assert!(r.success);
@@ -237,6 +251,29 @@ mod tests {
         world.revert_to(cp);
         // slot 5 restored to the pre-call committed value 3, not 99.
         assert_eq!(world.sload(&a, U256::from(5)), U256::from(3));
+    }
+
+    #[test]
+    fn call_reserves_one_sixtyfourth_of_gas() {
+        // A requests all gas (PUSH2 0xffff) for a callee that tries to burn
+        // everything via a huge SSTORE loop; the caller must still finish (STOP)
+        // because >= 1/64 was reserved. Here we assert the caller succeeds even
+        // though the callee runs out.
+        let mut world = World::new();
+        let a = addr(0xaa);
+        let callee = { let mut v = vec![0u8; 20]; v[19] = 0x09; v };
+        // callee: SSTORE 1=1 (20000), SSTORE 2=1 (20000), ... will OOG on tiny gas
+        world.set_code(&callee, vec![
+            Push1 as u8, 1, Push1 as u8, 1, Sstore as u8,
+            Push1 as u8, 1, Push1 as u8, 2, Sstore as u8, Stop as u8,
+        ]);
+        // A: request only 100 gas for the callee (PUSH1 100), CALL, then STOP.
+        // callee OOGs -> CALL pushes 0 -> A still STOPs successfully.
+        world.set_code(&a, vec![Push1 as u8, 100, Push1 as u8, 0x09, Call as u8, Stop as u8]);
+        let r = execute(&mut world, &a, 1_000_000, 0);
+        assert!(r.success, "caller must survive a callee OOG");
+        // callee's writes were reverted (it failed)
+        assert_eq!(world.sload(&callee, U256::from(1)), U256::zero());
     }
 
     #[test]

@@ -39,6 +39,7 @@ pub enum OpCode {
     Jumpi = 0x57,
     Jumpdest = 0x5b,
     Push1 = 0x60,
+    Push2 = 0x61,
     Dup1 = 0x80,
     Swap1 = 0x90,
     // Tron-specific (0xd0..=0xdb)
@@ -93,6 +94,7 @@ impl OpCode {
             0x57 => Jumpi,
             0x5b => Jumpdest,
             0x60 => Push1,
+            0x61 => Push2,
             0x80 => Dup1,
             0x90 => Swap1,
             0xd0 => CallToken,

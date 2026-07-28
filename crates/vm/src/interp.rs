@@ -168,6 +168,12 @@ pub fn run_with_input(code: &[u8], calldata: &[u8], limit: u64, host: &mut dyn H
                 let v = *code.get(pc).unwrap_or(&0);
                 push!(U256::from(v));
             }
+            OpCode::Push2 => {
+                let hi = *code.get(pc + 1).unwrap_or(&0) as u16;
+                let lo = *code.get(pc + 2).unwrap_or(&0) as u16;
+                pc += 2;
+                push!(U256::from((hi << 8) | lo));
+            }
             OpCode::CallDataLoad => {
                 let off = pop!().low_u64() as usize;
                 let mut buf = [0u8; 32];
