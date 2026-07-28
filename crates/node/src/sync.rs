@@ -53,6 +53,34 @@ pub fn apply_synced_blocks<S: KvStore>(
     Ok(applied)
 }
 
+/// One round of peer-managed sync: pick the best peer ahead of our head, connect
+/// over TCP, fetch the blocks it offers, and validate+apply them. Returns the
+/// number of blocks applied (0 if no peer is ahead). Ties [`tron_p2p::peer`],
+/// the channel sync, and [`apply_synced_blocks`] together.
+pub async fn sync_from_best_peer<S: KvStore>(
+    state: &mut WorldState<S>,
+    peers: &tron_p2p::peer::PeerManager,
+    require_sig: bool,
+) -> Result<usize, SyncError> {
+    let our_head = state
+        .get_prop_i64(tron_state::blocks::LATEST_BLOCK_NUMBER)
+        .map_err(|e| SyncError::State(e.to_string()))?;
+    let Some(target) = peers.best_sync_target(our_head) else {
+        return Ok(0);
+    };
+    let addr = format!("{}:{}", target.addr.host, target.addr.port);
+
+    let mut stream = tokio::net::TcpStream::connect(&addr)
+        .await
+        .map_err(|e| SyncError::State(format!("connect {addr}: {e}")))?;
+    let fetched = tron_p2p::channel::sync_from(&mut stream, our_head)
+        .await
+        .map_err(|e| SyncError::State(format!("sync {addr}: {e:?}")))?;
+
+    let block_bytes: Vec<Vec<u8>> = fetched.into_iter().map(|(_, b)| b).collect();
+    apply_synced_blocks(state, &block_bytes, require_sig)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
