@@ -1,0 +1,10 @@
+[package]
+name = "tron-consensus"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+tron-types.workspace = true
+tron-proto.workspace = true

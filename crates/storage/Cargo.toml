@@ -1,0 +1,15 @@
+[package]
+name = "tron-storage"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+thiserror.workspace = true
+
+[features]
+default = []
+# P1: enable a RocksDB-backed KvStore behind this feature (matches the java-tron
+# JDK17 profile). Kept off by default so `cargo test` needs no native rocksdb build.
+rocksdb = []

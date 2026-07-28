@@ -1,0 +1,33 @@
+[package]
+name = "tron-node"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "tron-rs full node binary (P0 scaffold)."
+
+[lib]
+name = "tron_node"
+path = "src/lib.rs"
+
+[[bin]]
+name = "tron-node"
+path = "src/main.rs"
+
+[dependencies]
+tron-types.workspace = true
+tron-consensus.workspace = true
+tron-p2p.workspace = true
+tron-rpc.workspace = true
+tron-state.workspace = true
+tron-storage.workspace = true
+tokio.workspace = true
+tokio-util.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+serde.workspace = true
+toml.workspace = true
+anyhow.workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["test-util"] }
