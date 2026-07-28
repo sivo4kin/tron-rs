@@ -20,8 +20,11 @@ broadcast → mempool → block production (see [Honest scope](#honest-scope)).
 | **P4** APIs | serving | **23 HTTP endpoints** (read + write path incl. `broadcasthex`→mempool) over real state, **bound on an axum socket**, served by the node binary — the tron-openapi contract |
 | **P5** SR block production | core done | block assembly + signing (**produce→validate round-trip**), mempool, **production consumes the mempool**, reward distribution |
 
-**Cross-node integration:** node A produces a block chain and node B **syncs it over a real TCP socket
-and stores it**, ending with matching heads and per-block ids.
+**The running node** (`cargo run -p tron-node`) serves the HTTP API on a socket **and runs a periodic
+sync service concurrently** on the same shared state, syncing validated blocks from seeded peers.
+
+**Cross-node integration:** node A produces a block chain and node B **syncs it over a real TCP socket,
+validates, and applies it**, ending with matching heads and per-block ids.
 
 ### Verified against real java-tron data
 
