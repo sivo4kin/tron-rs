@@ -171,7 +171,62 @@ comparison**, not a single root hash:
    contract-test against the reference node.
 5. **Corpus:** capture testnet blocks + reference-state snapshots as committed fixtures for CI.
 
-## 8. Phased roadmap
+## 8. Testing strategy
+
+The §7 differential harness is the **top** of a test pyramid, not the whole of it. Each layer catches
+a class of bugs the layer above is too coarse to localize.
+
+### 8.1 Layers
+1. **Unit (per crate) — golden vectors.**
+   - `crypto`: secp256k1 sign/recover, `sha256`/`keccak256`, SM2 against known test vectors.
+   - `types`: address encoding (21-byte `0x41…`, Base58Check ↔ hex), `Sun` arithmetic, id types.
+   - `proto`: encode/decode roundtrip; decode of real captured messages.
+   - `state`: per-type key-encoding roundtrip; column-family mapping.
+2. **Component — behavior in isolation.**
+   - **Actuators:** one suite per system-contract type (transfer / TRC10 / freeze-stake / vote /
+     witness / proposal / exchange): apply to a seeded state, assert resulting state + fees/resources.
+   - **TVM opcode-level differential:** each opcode and precompile executed against java-tron for the
+     same input → assert equal result **and** equal energy cost (uses opentron's `tvm` energy constants
+     as the reference table; see §5.2). Table-driven so gaps are visible.
+   - **Consensus units:** witness-schedule/slot math, maintenance vote-counting, proposal >2/3 rule.
+3. **Property / fuzz — robustness & invariants.**
+   - Decoders (`tx`, `block`, wire messages) must **never panic** on adversarial bytes (`cargo-fuzz`).
+   - Roundtrip properties (encode∘decode = id), energy-monotonicity, state commit/rollback symmetry
+     (`proptest`).
+4. **Differential / conformance — parity (the §7 harness).**
+   - Block/tx replay + per-block `txTrieRoot` == header; periodic full-state diff vs the java-tron
+     reference node. This is the **D3 gate**.
+5. **Integration — the whole node.**
+   - Boot → replay a fixed offline range → assert state. **Restart-resume** (M-restart). **Fork/reorg**
+     handling with crafted competing chains — explicitly, because this is opentron's weakest area (P3).
+   - **API conformance:** serve responses and validate them against the `tron-openapi` spec (task 1),
+     contract-tested against the reference node.
+6. **Soak / performance (deferred, D3).** Named now with a placeholder gate: sustained live-testnet
+   follow with zero anomalies; throughput/memory baselines. Hardened after parity.
+
+### 8.2 Fixtures & oracle
+- **Oracle:** a java-tron **testnet** node (we already build one — task 2) queried via HTTP/gRPC.
+- **Corpus (committed):** captured testnet blocks + reference-state snapshots at chosen heights + the
+  TVM opcode/precompile vector table. Versioned so CI is deterministic and offline-runnable.
+- **Determinism guards:** golden hashes for serialization/merkle so drift fails fast (cf. the task-2
+  `Math.pow` determinism lesson).
+
+### 8.3 Per-phase test gates
+| Phase | Must be green before advancing |
+|---|---|
+| P0 Scaffold | crate unit tests compile+pass; proto roundtrip; `node` boots/shuts in an integration test |
+| P1 Chain/state | actuator component suites; **differential replay + state-diff green on a non-VM block range** |
+| P2 TVM | opcode/precompile differential table 100% for supported ops; replay green on VM-bearing blocks |
+| P3 Networking | reorg/fork integration tests; live-testnet head-follow with 0 anomalies over a soak window |
+| P4 APIs | `tron-openapi` conformance + contract tests vs reference node |
+| P5 SR (post-v1) | block-assembly determinism; mempool property tests; witness-schedule integration |
+
+### 8.4 CI
+- Every PR: unit + component + property (short) + differential replay over the committed corpus.
+- Nightly: fuzz run + a longer live-testnet soak.
+- Coverage tracked but **not** a gate — differential parity is the real gate, not line coverage.
+
+## 9. Phased roadmap
 - **P0 — Scaffold & proto** *(this deliverable starts it, D1):* workspace, crates, proto codegen,
   config, `types`/`crypto` primitives, RocksDB `storage` wiring, `node` skeleton that boots + shuts down.
 - **P1 — Chain & state (offline):** block/tx model, `state` stores, actuators for core system contracts
@@ -183,7 +238,7 @@ comparison**, not a single root hash:
 - **P4 — APIs:** HTTP (tron-openapi contract) → gRPC (tonic) → eth-JSON-RPC.
 - **P5 — SR / block production (post-v1, D4):** witness scheduling, mempool, block assembly, keystore.
 
-## 9. Risks & mitigations
+## 10. Risks & mitigations
 - **TVM parity (highest)** — energy accounting + opcode/quirk edge cases. *Mitigation:* opentron `tvm`
   as reference + the P2 spike gate + differential corpus.
 - **Fork-choice & finality** — opentron's weakest area; PBFT + DPoS fork rules are subtle. *Mitigation:*
@@ -195,7 +250,7 @@ comparison**, not a single root hash:
   current java-tron.
 - **Scope creep** — chasing mainnet/SR before testnet parity is solid. *Mitigation:* D3/D4 gates.
 
-## 10. Scaffold plan (P0, immediate)
+## 11. Scaffold plan (P0, immediate)
 Create the Cargo workspace and crate skeletons from §5, wire proto codegen from java-tron's `.proto`,
 stand up `types`/`crypto`/`storage`, and a `node` binary that loads config and cleanly starts/stops an
 empty service set. No consensus logic yet — just a compiling, testable skeleton the later phases fill.

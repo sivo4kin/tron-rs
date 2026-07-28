@@ -1,0 +1,8 @@
+target/
+Cargo.lock
+.DS_Store
+*.log
+.claude-flow/
+.claude/
+.swarm/
+.hive-mind/
