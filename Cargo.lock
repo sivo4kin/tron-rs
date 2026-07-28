@@ -1362,6 +1362,7 @@ dependencies = [
 name = "tron-state"
 version = "0.0.1"
 dependencies = [
+ "prost",
  "thiserror",
  "tron-proto",
  "tron-storage",

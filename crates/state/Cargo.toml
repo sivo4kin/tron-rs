@@ -10,3 +10,4 @@ tron-types.workspace = true
 tron-storage.workspace = true
 tron-proto.workspace = true
 thiserror.workspace = true
+prost.workspace = true
