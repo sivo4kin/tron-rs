@@ -419,6 +419,25 @@ pub fn get_paginated_asset_issue_list(_req: &Value) -> Value {
 }
 
 
+/// `POST /wallet/getavailableunfreezecount` — pending Stake 2.0 unfreeze slots
+/// used by the account (java-tron caps concurrent unfreezes at 32).
+pub fn get_available_unfreeze_count<S: KvStore>(state: &WorldState<S>, req: &Value) -> Value {
+    const MAX_UNFREEZE: usize = 32;
+    let used = req.get("owner_address").or_else(|| req.get("address"))
+        .and_then(Value::as_str).and_then(parse_req_address)
+        .and_then(|a| state.get_account(&a).ok().flatten())
+        .map(|acc| acc.unfrozen_v2.len())
+        .unwrap_or(0);
+    json!({ "count": MAX_UNFREEZE.saturating_sub(used) })
+}
+
+/// `POST /wallet/getdelegatedresourcev2` — Stake 2.0 delegation records (empty
+/// until the delegation store is enumerated).
+pub fn get_delegated_resource_v2(_req: &Value) -> Value {
+    json!({ "delegatedResource": [] })
+}
+
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -718,5 +737,21 @@ mod tests {
     fn asset_query_endpoints() {
         assert_eq!(get_asset_issue_by_key(&json!({ "value": "1000001" })), json!({}));
         assert!(get_paginated_asset_issue_list(&json!({ "offset": 0, "limit": 10 }))["assetIssue"].as_array().unwrap().is_empty());
+    }
+
+    #[test]
+    fn available_unfreeze_count() {
+        let mut ws = WorldState::new(MemoryStore::new());
+        let addr = Address::from_body([0x77; 20]);
+        ws.put_account(&addr, &protocol::Account {
+            address: addr.as_bytes().to_vec(),
+            unfrozen_v2: vec![protocol::account::UnFreezeV2::default(); 5],
+            ..Default::default()
+        }).unwrap();
+        assert_eq!(get_available_unfreeze_count(&ws, &json!({ "owner_address": addr.to_hex() }))["count"], 27); // 32-5
+        // unknown -> full 32 available
+        let other = Address::from_body([0x88; 20]);
+        assert_eq!(get_available_unfreeze_count(&ws, &json!({ "owner_address": other.to_hex() }))["count"], 32);
+        assert!(get_delegated_resource_v2(&json!({}))["delegatedResource"].as_array().unwrap().is_empty());
     }
 }

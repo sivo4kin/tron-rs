@@ -67,6 +67,8 @@ pub fn router_with_state<S: KvStore + 'static>(state: NodeState<S>) -> Router {
         .route("/wallet/getassetissuebyid", post(get_asset_issue_by_key))
         .route("/wallet/getassetissuebyname", post(get_asset_issue_by_key))
         .route("/wallet/getpaginatedassetissuelist", post(get_paginated_asset_issue_list))
+        .route("/wallet/getavailableunfreezecount", post(get_available_unfreeze_count::<S>))
+        .route("/wallet/getdelegatedresourcev2", post(get_delegated_resource_v2))
         .route("/wallet/getnowblock", post(get_now_block::<S>))
         .route("/wallet/getblockbynum", post(get_block_by_num::<S>))
         .route("/wallet/getblockbylatestnum", post(get_block_by_latest_num::<S>))
@@ -93,6 +95,8 @@ async fn get_account<S: KvStore>(
     Json(http::get_account(&state, &req))
 }
 
+async fn get_available_unfreeze_count<S: KvStore>(State(state): State<AppState<S>>, Json(req): Json<Value>) -> Json<Value> { Json(http::get_available_unfreeze_count(&state, &req)) }
+async fn get_delegated_resource_v2(Json(req): Json<Value>) -> Json<Value> { Json(http::get_delegated_resource_v2(&req)) }
 async fn get_asset_issue_by_key(Json(req): Json<Value>) -> Json<Value> { Json(http::get_asset_issue_by_key(&req)) }
 async fn get_paginated_asset_issue_list(Json(req): Json<Value>) -> Json<Value> { Json(http::get_paginated_asset_issue_list(&req)) }
 async fn list_exchanges() -> Json<Value> { Json(http::list_exchanges()) }
