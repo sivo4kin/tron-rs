@@ -39,7 +39,33 @@ pub fn need_maintenance(next_maintenance_time: i64, block_time: i64) -> bool {
     block_time >= next_maintenance_time
 }
 
+/// A witness produces this many consecutive slots before rotating (java-tron
+/// `ChainConstant.SINGLE_REPEAT`).
+pub const SINGLE_REPEAT: u64 = 1;
+
+/// The scheduled producer for an offset `slot` from the head, java-tron
+/// `DposSlot.getScheduledWitness`: index into the ordered active-witness list by
+/// `(head_abs_slot + slot) % (n*SINGLE_REPEAT) / SINGLE_REPEAT`.
+///
+/// `head_abs_slot` is the absolute slot of the latest block ([`slot_of`] with the
+/// genesis reference). Returns the producer's address, or `None` if there are no
+/// active witnesses.
+pub fn scheduled_witness<'a>(
+    active: &'a [Vec<u8>],
+    head_abs_slot: u64,
+    slot: u64,
+) -> Option<&'a Vec<u8>> {
+    if active.is_empty() {
+        return None;
+    }
+    let current = head_abs_slot + slot;
+    let n = active.len() as u64;
+    let idx = (current % (n * SINGLE_REPEAT)) / SINGLE_REPEAT;
+    active.get(idx as usize)
+}
+
 pub mod producer;
+pub mod reward;
 
 pub mod validation {
     //! Structural block validation (java-tron `BlockCapsule` checks):
@@ -152,6 +178,19 @@ mod tests {
         assert_eq!(slot_of(genesis, genesis), 0);
         assert_eq!(slot_of(genesis + 3_000, genesis), 1);
         assert_eq!(slot_of(genesis + 9_000, genesis), 3);
+    }
+
+    #[test]
+    fn witness_scheduling_rotates_round_robin() {
+        let active: Vec<Vec<u8>> = (0..3u8).map(|i| vec![i]).collect();
+        // head at abs slot 0: slot 1 -> witness[1], slot 2 -> witness[2], slot 3 -> witness[0]
+        assert_eq!(scheduled_witness(&active, 0, 1), Some(&vec![1]));
+        assert_eq!(scheduled_witness(&active, 0, 2), Some(&vec![2]));
+        assert_eq!(scheduled_witness(&active, 0, 3), Some(&vec![0]));
+        // head offset shifts the schedule
+        assert_eq!(scheduled_witness(&active, 5, 1), Some(&vec![0])); // (5+1)%3=0
+        // empty set -> None
+        assert_eq!(scheduled_witness(&[], 0, 1), None);
     }
 
     #[test]
