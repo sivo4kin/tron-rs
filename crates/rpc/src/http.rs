@@ -774,7 +774,7 @@ mod tests {
 
     #[test]
     fn account_net_and_list_witnesses() {
-        let mut ws = WorldState::new(MemoryStore::new());
+        let ws = WorldState::new(MemoryStore::new());
         let addr = Address::from_body([0x99; 20]);
         ws.put_account(&addr, &protocol::Account {
             address: addr.as_bytes().to_vec(),
