@@ -741,7 +741,7 @@ mod tests {
 
     #[test]
     fn available_unfreeze_count() {
-        let mut ws = WorldState::new(MemoryStore::new());
+        let ws = WorldState::new(MemoryStore::new());
         let addr = Address::from_body([0x77; 20]);
         ws.put_account(&addr, &protocol::Account {
             address: addr.as_bytes().to_vec(),
