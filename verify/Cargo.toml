@@ -1,0 +1,21 @@
+[package]
+name = "tron-verify"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "Differential verification harness: captures live-chain fixtures from a java-tron node and asserts tron-rs parity against them (SPEC section 7)."
+
+[[bin]]
+name = "capture"
+path = "src/bin/capture.rs"
+
+[dependencies]
+tron-proto.workspace = true
+tron-chain.workspace = true
+tron-types.workspace = true
+prost.workspace = true
+tonic.workspace = true
+tokio.workspace = true
+anyhow.workspace = true
+hex.workspace = true

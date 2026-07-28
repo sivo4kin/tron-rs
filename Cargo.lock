@@ -1285,6 +1285,7 @@ dependencies = [
 name = "tron-chain"
 version = "0.0.1"
 dependencies = [
+ "prost",
  "tron-crypto",
  "tron-proto",
  "tron-types",
@@ -1382,6 +1383,20 @@ dependencies = [
  "hex",
  "sha2",
  "thiserror",
+]
+
+[[package]]
+name = "tron-verify"
+version = "0.0.1"
+dependencies = [
+ "anyhow",
+ "hex",
+ "prost",
+ "tokio",
+ "tonic",
+ "tron-chain",
+ "tron-proto",
+ "tron-types",
 ]
 
 [[package]]

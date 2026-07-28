@@ -9,3 +9,4 @@ authors.workspace = true
 tron-types.workspace = true
 tron-proto.workspace = true
 tron-crypto.workspace = true
+prost.workspace = true
