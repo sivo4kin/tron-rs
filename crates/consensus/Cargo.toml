@@ -9,5 +9,7 @@ authors.workspace = true
 tron-types.workspace = true
 tron-proto.workspace = true
 tron-chain.workspace = true
+tron-crypto.workspace = true
+prost.workspace = true
 thiserror.workspace = true
 hex.workspace = true

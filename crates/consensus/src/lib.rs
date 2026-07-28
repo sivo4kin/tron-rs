@@ -39,6 +39,8 @@ pub fn need_maintenance(next_maintenance_time: i64, block_time: i64) -> bool {
     block_time >= next_maintenance_time
 }
 
+pub mod producer;
+
 pub mod validation {
     //! Structural block validation (java-tron `BlockCapsule` checks):
     //! header present, `txTrieRoot` matches the transactions, witness signature

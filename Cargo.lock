@@ -1689,8 +1689,10 @@ name = "tron-consensus"
 version = "0.0.1"
 dependencies = [
  "hex",
+ "prost",
  "thiserror",
  "tron-chain",
+ "tron-crypto",
  "tron-proto",
  "tron-types",
 ]
