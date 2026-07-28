@@ -15,7 +15,7 @@
 
 use crate::{ActuatorError, ExecutionResult};
 use tron_proto::protocol::{AccountCreateContract, AccountUpdateContract, SetAccountIdContract};
-use tron_state::{props, WorldState};
+use tron_state::WorldState;
 use tron_storage::KvStore;
 use tron_types::{Address, ADDRESS_LEN};
 
@@ -201,6 +201,7 @@ impl<'a> SetAccountIdActuator<'a> {
 mod tests {
     use super::*;
     use tron_proto::protocol;
+    use tron_state::props;
     use tron_storage::MemoryStore;
 
     fn addr(b: u8) -> Address {
