@@ -8,6 +8,7 @@
 //!
 //! Encodings are guarded by the differential harness (SPEC section 7).
 
+pub mod blocks;
 pub mod genesis;
 
 use prost::Message;
@@ -27,6 +28,7 @@ pub mod cf {
     pub const ASSET: &str = "asset";
     pub const PROPOSAL: &str = "proposal";
     pub const EXCHANGE: &str = "exchange";
+    pub const BLOCK: &str = "block";
     pub const DYNAMIC_PROPERTIES: &str = "properties";
 }
 

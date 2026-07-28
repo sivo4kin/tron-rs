@@ -66,6 +66,49 @@ pub fn get_account<S: KvStore>(state: &WorldState<S>, req: &Value) -> Value {
 /// `GET /wallet/getnowblock`-style block-number probe is out of scope here; this
 /// module grows endpoint-by-endpoint against the tron-openapi contract.
 
+/// Render a block as java-tron-shaped JSON (subset: header number/timestamp/
+/// txTrieRoot/parentHash/witness, block id, and transaction count).
+fn block_to_json(block: &tron_proto::protocol::Block) -> Value {
+    let Some(raw) = block.block_header.as_ref().and_then(|h| h.raw_data.as_ref()) else {
+        return json!({});
+    };
+    let header = json!({
+        "number": raw.number,
+        "timestamp": raw.timestamp,
+        "txTrieRoot": hex::encode(&raw.tx_trie_root),
+        "parentHash": hex::encode(&raw.parent_hash),
+        "witness_address": hex::encode(&raw.witness_address),
+        "version": raw.version,
+    });
+    let block_id = tron_chain::block_id_of(block).map(|h| h.to_hex()).unwrap_or_default();
+    json!({
+        "blockID": block_id,
+        "block_header": { "raw_data": header },
+        "transactions_count": block.transactions.len(),
+    })
+}
+
+/// `POST /wallet/getnowblock` — the head block.
+pub fn get_now_block<S: KvStore>(state: &WorldState<S>) -> Value {
+    match state.get_now_block() {
+        Ok(Some(b)) => block_to_json(&b),
+        Ok(None) => json!({}),
+        Err(e) => error(&format!("state error: {e}")),
+    }
+}
+
+/// `POST /wallet/getblockbynum` — body `{ "num": <i64> }`.
+pub fn get_block_by_num<S: KvStore>(state: &WorldState<S>, req: &Value) -> Value {
+    let Some(num) = req.get("num").and_then(Value::as_i64) else {
+        return error("invalid num");
+    };
+    match state.get_block_by_num(num) {
+        Ok(Some(b)) => block_to_json(&b),
+        Ok(None) => json!({}),
+        Err(e) => error(&format!("state error: {e}")),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -116,5 +159,33 @@ mod tests {
         let (ws, _) = seeded();
         assert!(get_account(&ws, &json!({ "address": "not-an-address" }))["Error"].is_string());
         assert!(get_account(&ws, &json!({}))["Error"].is_string());
+    }
+
+    #[test]
+    fn get_now_block_and_by_num() {
+        let mut ws = WorldState::new(MemoryStore::new());
+        let blk = protocol::Block {
+            block_header: Some(protocol::BlockHeader {
+                raw_data: Some(protocol::block_header::Raw {
+                    number: 42,
+                    timestamp: 1_700_000_000_000,
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }),
+            transactions: vec![protocol::Transaction::default()],
+            ..Default::default()
+        };
+        ws.put_block(&blk).unwrap();
+
+        let now = get_now_block(&ws);
+        assert_eq!(now["block_header"]["raw_data"]["number"], 42);
+        assert_eq!(now["transactions_count"], 1);
+
+        let by_num = get_block_by_num(&ws, &json!({ "num": 42 }));
+        assert_eq!(by_num["block_header"]["raw_data"]["number"], 42);
+
+        assert_eq!(get_block_by_num(&ws, &json!({ "num": 99 })), json!({}));
+        assert!(get_block_by_num(&ws, &json!({}))["Error"].is_string());
     }
 }

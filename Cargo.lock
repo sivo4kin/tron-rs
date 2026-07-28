@@ -1753,6 +1753,7 @@ dependencies = [
  "hex",
  "serde",
  "serde_json",
+ "tron-chain",
  "tron-proto",
  "tron-state",
  "tron-storage",
