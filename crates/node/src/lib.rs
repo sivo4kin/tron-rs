@@ -140,14 +140,39 @@ impl Node {
             }));
         }
 
-        // Placeholder services for subsystems not yet wired (p2p, consensus).
-        for name in ["p2p", "consensus"] {
+        // Sync service: periodically sync from the best seeded peer into the shared
+        // state (a no-op when no peers are configured/ahead). Runs on the same
+        // Arc<WorldState> the HTTP server serves — enabled by WorldState's &self API.
+        {
+            let sync_state = state.clone();
+            let peers = self.config.seeded_peers();
             let token = shutdown.clone();
-            let name = name.to_string();
             handles.push(tokio::spawn(async move {
-                tracing::info!(service = %name, "service started");
+                tracing::info!(service = "sync", "service started");
+                let mut tick = tokio::time::interval(std::time::Duration::from_secs(3));
+                loop {
+                    tokio::select! {
+                        _ = token.cancelled() => break,
+                        _ = tick.tick() => {
+                            match crate::sync::sync_from_best_peer(&sync_state, &peers, false).await {
+                                Ok(n) if n > 0 => tracing::info!(applied = n, "synced blocks"),
+                                Ok(_) => {}
+                                Err(e) => tracing::debug!(?e, "sync round failed"),
+                            }
+                        }
+                    }
+                }
+                tracing::info!(service = "sync", "service stopped");
+            }));
+        }
+
+        // Placeholder service for the remaining subsystem (consensus/producer).
+        {
+            let token = shutdown.clone();
+            handles.push(tokio::spawn(async move {
+                tracing::info!(service = "consensus", "service started");
                 token.cancelled().await;
-                tracing::info!(service = %name, "service stopped");
+                tracing::info!(service = "consensus", "service stopped");
             }));
         }
 
