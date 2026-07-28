@@ -276,7 +276,7 @@ mod tests {
     fn rejects_unsupported_contract_type() {
         let mut ws = WorldState::new(MemoryStore::new());
         let contract = protocol::transaction::Contract {
-            r#type: ContractType::WithdrawBalanceContract as i32,
+            r#type: ContractType::ShieldedTransferContract as i32,
             parameter: Some(prost_types::Any::default()),
             ..Default::default()
         };
