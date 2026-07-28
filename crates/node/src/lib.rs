@@ -4,6 +4,8 @@
 //! signal, and stop cleanly. Later phases replace the placeholder services with the
 //! real p2p, consensus, and rpc subsystems.
 
+pub mod sync;
+
 use serde::Deserialize;
 use tokio_util::sync::CancellationToken;
 

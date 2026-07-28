@@ -20,6 +20,8 @@ tron-consensus.workspace = true
 tron-p2p.workspace = true
 tron-rpc.workspace = true
 tron-state.workspace = true
+prost.workspace = true
+tron-proto.workspace = true
 axum.workspace = true
 tron-storage.workspace = true
 tokio = { workspace = true, features = ["net"] }
@@ -36,6 +38,7 @@ default = []
 rocksdb = ["tron-storage/rocksdb"]
 
 [dev-dependencies]
+tron-crypto.workspace = true
 tokio = { workspace = true, features = ["test-util", "macros", "rt-multi-thread", "net"] }
 reqwest.workspace = true
 serde_json.workspace = true

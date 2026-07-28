@@ -2000,6 +2000,7 @@ version = "0.0.1"
 dependencies = [
  "anyhow",
  "axum",
+ "prost",
  "reqwest",
  "serde",
  "serde_json",
@@ -2009,7 +2010,9 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "tron-consensus",
+ "tron-crypto",
  "tron-p2p",
+ "tron-proto",
  "tron-rpc",
  "tron-state",
  "tron-storage",
