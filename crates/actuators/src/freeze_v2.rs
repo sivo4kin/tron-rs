@@ -26,8 +26,9 @@
 //! [`DEFAULT_UNFREEZE_DELAY_DAYS`] when the property is unset.
 //!
 //! Deviations from java-tron (differences are data-only, documented here):
-//! - The `supportUnfreezeDelay` committee gate (both actuators) is not modelled;
-//!   FreezeV2 is treated as always enabled.
+//! - The `supportUnfreezeDelay` committee gate (both actuators) is modelled as
+//!   `UNFREEZE_DELAY_DAYS > 0`: FreezeV2/UnfreezeV2 are rejected until Stake 2.0 is
+//!   committee-enabled (java `supportUnfreezeDelay()`).
 //! - Unfreeze execution does not run java-tron's `unfreezeExpire` step (auto
 //!   withdrawing matured `unfrozen_v2` entries back to balance), nor
 //!   `withdrawReward`/vote/total-weight bookkeeping. It performs only the
@@ -104,6 +105,14 @@ impl<'a> FreezeBalanceV2Actuator<'a> {
 
     /// java-tron `FreezeBalanceV2Actuator.validate`. Returns the fee (always 0).
     pub fn validate<S: KvStore>(&self, state: &WorldState<S>) -> Result<i64, ActuatorError> {
+        // java `supportUnfreezeDelay()` gate (UNFREEZE_DELAY_DAYS > 0): Stake 2.0
+        // must be committee-enabled before FreezeV2 is accepted.
+        if state.get_prop_i64(UNFREEZE_DELAY_DAYS_KEY)? <= 0 {
+            return Err(ActuatorError::Validate(
+                "Not support FreezeV2 transaction, need to be opened by the committee".into(),
+            ));
+        }
+
         let owner = parse_address(&self.contract.owner_address)?;
 
         let owner_account = state.get_account(&owner)?.ok_or_else(|| {
@@ -202,6 +211,13 @@ impl<'a> UnfreezeBalanceV2Actuator<'a> {
 
     /// java-tron `UnfreezeBalanceV2Actuator.validate`. Returns the fee (0).
     pub fn validate<S: KvStore>(&self, state: &WorldState<S>) -> Result<i64, ActuatorError> {
+        // java `supportUnfreezeDelay()` gate (UNFREEZE_DELAY_DAYS > 0).
+        if state.get_prop_i64(UNFREEZE_DELAY_DAYS_KEY)? <= 0 {
+            return Err(ActuatorError::Validate(
+                "Not support UnfreezeV2 transaction, need to be opened by the committee".into(),
+            ));
+        }
+
         let owner = parse_address(&self.contract.owner_address)?;
 
         let account = state.get_account(&owner)?.ok_or_else(|| {
@@ -345,6 +361,8 @@ mod tests {
 
     fn seeded_state(owner: &Address, balance: i64) -> WorldState<MemoryStore> {
         let ws = WorldState::new(MemoryStore::new());
+        // Stake 2.0 committee-enabled (supportUnfreezeDelay gate precondition).
+        ws.put_prop_i64(UNFREEZE_DELAY_DAYS_KEY, DEFAULT_UNFREEZE_DELAY_DAYS).unwrap();
         let account = protocol::Account {
             address: owner.as_bytes().to_vec(),
             balance,
@@ -494,10 +512,23 @@ mod tests {
     #[test]
     fn freeze_missing_owner_rejected() {
         let ws = WorldState::new(MemoryStore::new());
+        ws.put_prop_i64(UNFREEZE_DELAY_DAYS_KEY, DEFAULT_UNFREEZE_DELAY_DAYS).unwrap();
         let c = freeze_contract(&addr(1), 3_000_000, ResourceCode::Bandwidth);
         assert!(matches!(
             FreezeBalanceV2Actuator::new(&c).validate(&ws),
             Err(ActuatorError::Validate(m)) if m.contains("not exists")
+        ));
+    }
+
+    #[test]
+    fn freeze_rejected_when_stake2_not_enabled() {
+        let o = addr(1);
+        let ws = seeded_state(&o, 10_000_000);
+        ws.put_prop_i64(UNFREEZE_DELAY_DAYS_KEY, 0).unwrap(); // committee not opened
+        let c = freeze_contract(&o, 3_000_000, ResourceCode::Bandwidth);
+        assert!(matches!(
+            FreezeBalanceV2Actuator::new(&c).validate(&ws),
+            Err(ActuatorError::Validate(m)) if m.contains("Not support FreezeV2 transaction")
         ));
     }
 
@@ -617,10 +648,21 @@ mod tests {
     #[test]
     fn unfreeze_missing_owner_rejected() {
         let ws = WorldState::new(MemoryStore::new());
+        ws.put_prop_i64(UNFREEZE_DELAY_DAYS_KEY, DEFAULT_UNFREEZE_DELAY_DAYS).unwrap();
         let c = unfreeze_contract(&addr(1), 1_000_000, ResourceCode::Bandwidth);
         assert!(matches!(
             UnfreezeBalanceV2Actuator::new(&c).validate(&ws),
             Err(ActuatorError::Validate(m)) if m.contains("does not exist")
+        ));
+    }
+
+    #[test]
+    fn unfreeze_rejected_when_stake2_not_enabled() {
+        let ws = WorldState::new(MemoryStore::new());
+        let c = unfreeze_contract(&addr(1), 1_000_000, ResourceCode::Bandwidth);
+        assert!(matches!(
+            UnfreezeBalanceV2Actuator::new(&c).validate(&ws),
+            Err(ActuatorError::Validate(m)) if m.contains("Not support UnfreezeV2 transaction")
         ));
     }
 

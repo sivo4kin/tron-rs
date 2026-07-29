@@ -7,13 +7,13 @@
 //!
 //! The record is stored inline and keyed by the stub `contract_address` (I01).
 //!
-//! Deviations from java-tron:
-//! - Feature gate not modelled — java rejects unless the energy-limit feature
-//!   (`ReceiptCapsule.checkForEnergyLimit`) is enabled.
-//!   See `// TODO(feature-gate): energy-limit / ALLOW_TVM_CONSTANTINOPLE`.
+//! Feature gate: java rejects `UpdateEnergyLimitContract` unless the energy-limit
+//! feature (`ReceiptCapsule.checkForEnergyLimit`) is enabled. We model that gate
+//! with `ALLOW_TVM_CONSTANTINOPLE` (the flag `checkForEnergyLimit` keys on).
 
-use crate::{ActuatorError, ExecutionResult};
+use crate::{require_feature, ActuatorError, ExecutionResult};
 use tron_proto::protocol::UpdateEnergyLimitContract;
+use tron_state::features::flags;
 use tron_state::WorldState;
 use tron_storage::KvStore;
 use tron_types::{Address, ADDRESS_LEN};
@@ -34,9 +34,14 @@ impl<'a> UpdateEnergyLimitActuator<'a> {
         Self { contract }
     }
 
-    // TODO(feature-gate): energy-limit / ALLOW_TVM_CONSTANTINOPLE — java rejects
-    // UpdateEnergyLimitContract unless the energy-limit feature is enabled.
     pub fn validate<S: KvStore>(&self, state: &WorldState<S>) -> Result<i64, ActuatorError> {
+        // java rejects unless the energy-limit feature (checkForEnergyLimit) is on.
+        require_feature(
+            state,
+            flags::ALLOW_TVM_CONSTANTINOPLE,
+            "contract type error, unexpected type [UpdateEnergyLimitContract]",
+        )?;
+
         let owner = parse_address(&self.contract.owner_address)?;
         let contract_addr = parse_address(&self.contract.contract_address)?;
 
@@ -90,8 +95,15 @@ mod tests {
         Address::from_body([b; 20])
     }
 
-    fn seeded(owner: &Address, contract: &Address, origin: &Address) -> WorldState<MemoryStore> {
+    /// A store with the energy-limit feature enabled (gate precondition).
+    fn feature_ws() -> WorldState<MemoryStore> {
         let ws = WorldState::new(MemoryStore::new());
+        ws.put_prop_i64(flags::ALLOW_TVM_CONSTANTINOPLE, 1).unwrap();
+        ws
+    }
+
+    fn seeded(owner: &Address, contract: &Address, origin: &Address) -> WorldState<MemoryStore> {
+        let ws = feature_ws();
         ws.put_account(
             owner,
             &protocol::Account { address: owner.as_bytes().to_vec(), ..Default::default() },
@@ -151,7 +163,7 @@ mod tests {
     #[test]
     fn rejects_missing_contract() {
         let (o, c) = (addr(1), addr(9));
-        let ws = WorldState::new(MemoryStore::new());
+        let ws = feature_ws();
         ws.put_account(&o, &protocol::Account { address: o.as_bytes().to_vec(), ..Default::default() })
             .unwrap();
         assert!(matches!(
@@ -164,7 +176,7 @@ mod tests {
     fn rejects_missing_owner() {
         let (o, c) = (addr(1), addr(9));
         let ws = {
-            let ws = WorldState::new(MemoryStore::new());
+            let ws = feature_ws();
             let record = protocol::SmartContract {
                 origin_address: o.as_bytes().to_vec(),
                 contract_address: c.as_bytes().to_vec(),
@@ -176,6 +188,17 @@ mod tests {
         assert!(matches!(
             UpdateEnergyLimitActuator::new(&contract(&o, &c, 5_000)).validate(&ws),
             Err(ActuatorError::Validate(m)) if m.contains("does not exist")
+        ));
+    }
+
+    #[test]
+    fn rejects_when_feature_disabled() {
+        let (o, c) = (addr(1), addr(9));
+        let ws = seeded(&o, &c, &o);
+        ws.put_prop_i64(flags::ALLOW_TVM_CONSTANTINOPLE, 0).unwrap();
+        assert!(matches!(
+            UpdateEnergyLimitActuator::new(&contract(&o, &c, 5_000)).validate(&ws),
+            Err(ActuatorError::Validate(m)) if m.contains("unexpected type [UpdateEnergyLimitContract]")
         ));
     }
 }

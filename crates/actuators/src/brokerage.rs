@@ -4,8 +4,9 @@
 //! (present in the witness store), and the brokerage must be 0..=100. Execute
 //! stores the new percentage; [`tron_consensus::reward::split_reward`] then uses it.
 
-use crate::{ActuatorError, ExecutionResult};
+use crate::{require_feature, ActuatorError, ExecutionResult};
 use tron_proto::protocol::UpdateBrokerageContract;
+use tron_state::features::flags;
 use tron_state::WorldState;
 use tron_storage::KvStore;
 use tron_types::{Address, ADDRESS_LEN};
@@ -29,6 +30,12 @@ impl<'a> UpdateBrokerageActuator<'a> {
     }
 
     pub fn validate<S: KvStore>(&self, state: &WorldState<S>) -> Result<i64, ActuatorError> {
+        // java gates UpdateBrokerage on allowChangeDelegation (CHANGE_DELEGATION == 1).
+        require_feature(
+            state,
+            flags::CHANGE_DELEGATION,
+            "contract type error, unexpected type [UpdateBrokerageContract]",
+        )?;
         let owner = parse_address(&self.contract.owner_address)?;
         let b = self.contract.brokerage;
         if !(0..=100).contains(&b) {
@@ -72,6 +79,7 @@ mod tests {
 
     fn with_witness(owner: &Address) -> WorldState<MemoryStore> {
         let ws = WorldState::new(MemoryStore::new());
+        ws.put_prop_i64(flags::CHANGE_DELEGATION, 1).unwrap(); // gate on
         let w = protocol::Witness { address: owner.as_bytes().to_vec(), ..Default::default() };
         ws.db.put(CF_WITNESS, owner.as_bytes(), &w.encode_to_vec()).unwrap();
         ws
@@ -109,9 +117,21 @@ mod tests {
     fn rejects_non_witness() {
         let o = addr(1);
         let ws = WorldState::new(MemoryStore::new()); // no witness
+        ws.put_prop_i64(flags::CHANGE_DELEGATION, 1).unwrap(); // gate on
         assert!(matches!(
             UpdateBrokerageActuator::new(&contract(&o, 30)).validate(&ws),
             Err(ActuatorError::Validate(m)) if m.contains("not a witness")
+        ));
+    }
+
+    #[test]
+    fn rejects_when_feature_disabled() {
+        let o = addr(1);
+        let ws = with_witness(&o);
+        ws.put_prop_i64(flags::CHANGE_DELEGATION, 0).unwrap();
+        assert!(matches!(
+            UpdateBrokerageActuator::new(&contract(&o, 30)).validate(&ws),
+            Err(ActuatorError::Validate(m)) if m.contains("unexpected type [UpdateBrokerageContract]")
         ));
     }
 }

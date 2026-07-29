@@ -6,9 +6,10 @@
 //! pending unfreeze entry.
 
 use crate::freeze_v2::TRX_PRECISION;
-use crate::{ActuatorError, ExecutionResult};
+use crate::{require_feature, ActuatorError, ExecutionResult};
 use tron_proto::protocol::account::FreezeV2;
 use tron_proto::protocol::CancelAllUnfreezeV2Contract;
+use tron_state::features::flags;
 use tron_state::{props, WorldState};
 use tron_storage::KvStore;
 use tron_types::{Address, ADDRESS_LEN};
@@ -30,6 +31,11 @@ impl<'a> CancelAllUnfreezeV2Actuator<'a> {
     }
 
     pub fn validate<S: KvStore>(&self, state: &WorldState<S>) -> Result<i64, ActuatorError> {
+        require_feature(
+            state,
+            flags::ALLOW_CANCEL_ALL_UNFREEZE_V2,
+            "Not support CancelAllUnfreezeV2 transaction, need to be opened by the committee",
+        )?;
         let owner = parse_address(&self.contract.owner_address)?;
         let account = state
             .get_account(&owner)?
@@ -111,6 +117,7 @@ mod tests {
     fn seed(owner: &Address, entries: Vec<UnFreezeV2>, now: i64) -> WorldState<MemoryStore> {
         let ws = WorldState::new(MemoryStore::new());
         ws.put_prop_i64(props::LATEST_BLOCK_HEADER_TIMESTAMP, now).unwrap();
+        ws.put_prop_i64(flags::ALLOW_CANCEL_ALL_UNFREEZE_V2, 1).unwrap(); // gate on
         ws.put_account(owner, &protocol::Account {
             address: owner.as_bytes().to_vec(), balance: 1_000, unfrozen_v2: entries, ..Default::default()
         }).unwrap();
@@ -174,6 +181,21 @@ mod tests {
     #[test]
     fn rejects_missing_owner() {
         let ws = WorldState::new(MemoryStore::new());
-        assert!(CancelAllUnfreezeV2Actuator::new(&contract(&addr(1))).validate(&ws).is_err());
+        ws.put_prop_i64(flags::ALLOW_CANCEL_ALL_UNFREEZE_V2, 1).unwrap();
+        assert!(matches!(
+            CancelAllUnfreezeV2Actuator::new(&contract(&addr(1))).validate(&ws),
+            Err(ActuatorError::Validate(m)) if m.contains("Account does not exist")
+        ));
+    }
+
+    #[test]
+    fn rejects_when_feature_disabled() {
+        let o = addr(1);
+        let ws = seed(&o, vec![u(300, 50, 0)], 100);
+        ws.put_prop_i64(flags::ALLOW_CANCEL_ALL_UNFREEZE_V2, 0).unwrap();
+        assert!(matches!(
+            CancelAllUnfreezeV2Actuator::new(&contract(&o)).validate(&ws),
+            Err(ActuatorError::Validate(m)) if m.contains("Not support CancelAllUnfreezeV2")
+        ));
     }
 }

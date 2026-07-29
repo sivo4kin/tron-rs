@@ -7,14 +7,15 @@
 //! the owner (TRX or `asset_v2`), mark the order `CANCELED`, and delist it from
 //! its price level (removing the level, then the pair, when they empty).
 //!
-//! Deviations from java-tron: market feature gate not modelled
-//! (`// TODO(feature-gate): ALLOW_MARKET_TRANSACTION`); fee burned via `burn_trx`.
+//! Deviations from java-tron: gated on `ALLOW_MARKET_TRANSACTION`
+//! (java `supportAllowMarketTransaction`); fee burned via `burn_trx`.
 
 use crate::market::order_book as ob;
 use crate::market::{credit_token, MARKET_CANCEL_FEE};
-use crate::{ActuatorError, ExecutionResult};
+use crate::{require_feature, ActuatorError, ExecutionResult};
 use tron_proto::protocol::market_order::State;
 use tron_proto::protocol::MarketCancelOrderContract;
+use tron_state::features::flags;
 use tron_state::WorldState;
 use tron_storage::KvStore;
 use tron_types::{Address, ADDRESS_LEN};
@@ -45,8 +46,13 @@ impl<'a> MarketCancelOrderActuator<'a> {
         Ok(state.get_prop_i64(MARKET_CANCEL_FEE)?.max(0))
     }
 
-    // TODO(feature-gate): ALLOW_MARKET_TRANSACTION.
     pub fn validate<S: KvStore>(&self, state: &WorldState<S>) -> Result<i64, ActuatorError> {
+        require_feature(
+            state,
+            flags::ALLOW_MARKET_TRANSACTION,
+            "Not support Market Transaction, need to be opened by the committee",
+        )?;
+
         let owner = parse_address(&self.contract.owner_address)?;
 
         let account = state
@@ -139,6 +145,7 @@ mod tests {
     fn ws() -> WorldState<MemoryStore> {
         let ws = WorldState::new(MemoryStore::new());
         ws.put_prop_i64(props::LATEST_BLOCK_HEADER_TIMESTAMP, 1_700_000_000_000).unwrap();
+        ws.put_prop_i64(flags::ALLOW_MARKET_TRANSACTION, 1).unwrap(); // gate on
         ws
     }
 
@@ -249,6 +256,19 @@ mod tests {
         assert!(matches!(
             MarketCancelOrderActuator::new(&cancel(&other, id)).validate(&w),
             Err(ActuatorError::Validate(msg)) if msg.contains("does not belong to the account")
+        ));
+    }
+
+    #[test]
+    fn rejects_when_market_feature_disabled() {
+        let mut w = ws();
+        let m = addr(1);
+        set_account(&w, &m, 0, 100);
+        let id = place(&mut w, &sell(&m, A, 100, TRX, 100));
+        w.put_prop_i64(flags::ALLOW_MARKET_TRANSACTION, 0).unwrap();
+        assert!(matches!(
+            MarketCancelOrderActuator::new(&cancel(&m, id)).validate(&w),
+            Err(ActuatorError::Validate(msg)) if msg.contains("Not support Market Transaction")
         ));
     }
 }

@@ -59,3 +59,21 @@ pub struct ExecutionResult {
     /// Fee charged, in sun.
     pub fee: i64,
 }
+
+/// Require a committee feature gate to be active, else reject with `err_msg`.
+///
+/// Mirrors java-tron actuators' opening guard
+/// `if (!dynamicStore.getAllowX()) throw new ContractValidateException(...)`.
+/// `key` is an `ALLOW_*` dynamic-property key (see
+/// [`tron_state::features::flags`]); the feature is on iff the property equals 1.
+pub fn require_feature<S: tron_storage::KvStore>(
+    state: &tron_state::WorldState<S>,
+    key: &str,
+    err_msg: &str,
+) -> Result<(), ActuatorError> {
+    if state.feature_enabled(key) {
+        Ok(())
+    } else {
+        Err(ActuatorError::Validate(err_msg.into()))
+    }
+}

@@ -13,6 +13,7 @@
 //! Encodings are guarded by the differential harness (SPEC section 7).
 
 pub mod blocks;
+pub mod features;
 pub mod genesis;
 
 use prost::Message;

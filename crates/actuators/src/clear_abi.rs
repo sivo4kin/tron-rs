@@ -12,10 +12,11 @@
 //!
 //! Deviations from java-tron:
 //! - Feature gate not modelled — java rejects unless `allowTvmConstantinople`.
-//!   See `// TODO(feature-gate): ALLOW_TVM_CONSTANTINOPLE`.
+//!   Gated on `ALLOW_TVM_CONSTANTINOPLE` (java `getAllowTvmConstantinople`).
 
-use crate::{ActuatorError, ExecutionResult};
+use crate::{require_feature, ActuatorError, ExecutionResult};
 use tron_proto::protocol::ClearAbiContract;
+use tron_state::features::flags;
 use tron_state::WorldState;
 use tron_storage::KvStore;
 use tron_types::{Address, ADDRESS_LEN};
@@ -36,9 +37,14 @@ impl<'a> ClearAbiActuator<'a> {
         Self { contract }
     }
 
-    // TODO(feature-gate): ALLOW_TVM_CONSTANTINOPLE — java rejects
-    // ClearABIContract unless the contract-state feature is enabled.
     pub fn validate<S: KvStore>(&self, state: &WorldState<S>) -> Result<i64, ActuatorError> {
+        // java rejects ClearABIContract unless the contract-state feature is on.
+        require_feature(
+            state,
+            flags::ALLOW_TVM_CONSTANTINOPLE,
+            "contract type error,unexpected type [ClearABIContract]",
+        )?;
+
         let owner = parse_address(&self.contract.owner_address)?;
         let contract_addr = parse_address(&self.contract.contract_address)?;
 
@@ -87,10 +93,17 @@ mod tests {
         Address::from_body([b; 20])
     }
 
-    /// State with owner account and a contract record (owned by `origin`) whose
-    /// ABI is non-empty.
-    fn seeded(owner: &Address, contract: &Address, origin: &Address) -> WorldState<MemoryStore> {
+    /// A store with the TVM-Constantinople feature enabled (gate precondition).
+    fn feature_ws() -> WorldState<MemoryStore> {
         let ws = WorldState::new(MemoryStore::new());
+        ws.put_prop_i64(flags::ALLOW_TVM_CONSTANTINOPLE, 1).unwrap();
+        ws
+    }
+
+    /// State with owner account and a contract record (owned by `origin`) whose
+    /// ABI is non-empty, feature enabled.
+    fn seeded(owner: &Address, contract: &Address, origin: &Address) -> WorldState<MemoryStore> {
+        let ws = feature_ws();
         ws.put_account(
             owner,
             &protocol::Account { address: owner.as_bytes().to_vec(), ..Default::default() },
@@ -128,7 +141,7 @@ mod tests {
     #[test]
     fn rejects_missing_contract() {
         let (o, c) = (addr(1), addr(9));
-        let ws = WorldState::new(MemoryStore::new());
+        let ws = feature_ws();
         ws.put_account(&o, &protocol::Account { address: o.as_bytes().to_vec(), ..Default::default() })
             .unwrap();
         // no contract record at c
@@ -152,7 +165,7 @@ mod tests {
     #[test]
     fn rejects_missing_owner() {
         let (o, c) = (addr(1), addr(9));
-        let ws = WorldState::new(MemoryStore::new());
+        let ws = feature_ws();
         let record = protocol::SmartContract {
             origin_address: o.as_bytes().to_vec(),
             contract_address: c.as_bytes().to_vec(),
@@ -168,7 +181,7 @@ mod tests {
 
     #[test]
     fn rejects_malformed_address() {
-        let ws = WorldState::new(MemoryStore::new());
+        let ws = feature_ws();
         let ct = ClearAbiContract {
             owner_address: vec![0x41; 20],
             contract_address: addr(9).as_bytes().to_vec(),
@@ -176,6 +189,18 @@ mod tests {
         assert!(matches!(
             ClearAbiActuator::new(&ct).validate(&ws),
             Err(ActuatorError::Validate(m)) if m.contains("Invalid address")
+        ));
+    }
+
+    #[test]
+    fn rejects_when_feature_disabled() {
+        // Same happy-path setup but without ALLOW_TVM_CONSTANTINOPLE.
+        let (o, c) = (addr(1), addr(9));
+        let ws = seeded(&o, &c, &o);
+        ws.put_prop_i64(flags::ALLOW_TVM_CONSTANTINOPLE, 0).unwrap();
+        assert!(matches!(
+            ClearAbiActuator::new(&contract(&o, &c)).validate(&ws),
+            Err(ActuatorError::Validate(m)) if m.contains("unexpected type [ClearABIContract]")
         ));
     }
 }

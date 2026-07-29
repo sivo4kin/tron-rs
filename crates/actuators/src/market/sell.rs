@@ -9,7 +9,7 @@
 //! settle fills, then book any residual.
 //!
 //! Deviations from java-tron (data-only):
-//! - Market feature gate not modelled (`// TODO(feature-gate): ALLOW_MARKET_TRANSACTION`).
+//! - Gated on `ALLOW_MARKET_TRANSACTION` (java `supportAllowMarketTransaction`).
 //! - Single V2 asset store; the sell-token AssetIssue existence check is folded
 //!   into the balance check (a token the owner doesn't hold reads as 0).
 //! - The per-account active-order-count cap and the intrusive prev/next order
@@ -23,9 +23,10 @@ use crate::market::{
     MARKET_QUANTITY_LIMIT, MARKET_SELL_FEE, MAX_MATCH_NUM,
 };
 use crate::market::DEFAULT_MARKET_QUANTITY_LIMIT;
-use crate::{ActuatorError, ExecutionResult};
+use crate::{require_feature, ActuatorError, ExecutionResult};
 use tron_proto::protocol::market_order::State;
 use tron_proto::protocol::{MarketOrder, MarketSellAssetContract};
+use tron_state::features::flags;
 use tron_state::{props, WorldState};
 use tron_storage::KvStore;
 use tron_types::{Address, ADDRESS_LEN};
@@ -59,9 +60,14 @@ impl<'a> MarketSellAssetActuator<'a> {
         Ok(if l > 0 { l } else { DEFAULT_MARKET_QUANTITY_LIMIT })
     }
 
-    // TODO(feature-gate): ALLOW_MARKET_TRANSACTION — java rejects unless the
-    // market feature is committee-enabled.
     pub fn validate<S: KvStore>(&self, state: &WorldState<S>) -> Result<i64, ActuatorError> {
+        // java rejects unless the market feature is committee-enabled.
+        require_feature(
+            state,
+            flags::ALLOW_MARKET_TRANSACTION,
+            "Not support Market Transaction, need to be opened by the committee",
+        )?;
+
         let c = self.contract;
         let owner = parse_address(&c.owner_address)?;
 
@@ -310,6 +316,7 @@ mod tests {
     fn ws() -> WorldState<MemoryStore> {
         let ws = WorldState::new(MemoryStore::new());
         ws.put_prop_i64(props::LATEST_BLOCK_HEADER_TIMESTAMP, 1_700_000_000_000).unwrap();
+        ws.put_prop_i64(flags::ALLOW_MARKET_TRANSACTION, 1).unwrap(); // gate on
         ws
     }
 
@@ -430,6 +437,18 @@ mod tests {
         assert!(matches!(
             MarketSellAssetActuator::new(&c).validate(&w),
             Err(ActuatorError::Validate(m)) if m.contains("No enough balance !")
+        ));
+    }
+
+    #[test]
+    fn rejects_when_market_feature_disabled() {
+        let w = ws();
+        w.put_prop_i64(flags::ALLOW_MARKET_TRANSACTION, 0).unwrap();
+        let t = addr(1);
+        set_account(&w, &t, 100, 0);
+        assert!(matches!(
+            MarketSellAssetActuator::new(&sell(&t, TRX, 100, A, 100)).validate(&w),
+            Err(ActuatorError::Validate(m)) if m.contains("Not support Market Transaction")
         ));
     }
 
