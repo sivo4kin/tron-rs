@@ -32,12 +32,50 @@ pub(crate) fn halt_is_success(h: &Halt) -> bool {
     matches!(h, Halt::Stop | Halt::Return | Halt::SelfDestruct)
 }
 
-/// Execute the code stored for `address` against `world` (the public frame entry used
-/// by the multi-account tests / callers).
+/// Execute the code stored for `address` against `world` with no calldata (the public
+/// frame entry used by the multi-account tests).
 pub fn execute(world: &mut World, address: &[u8], energy_limit: u64, depth: usize) -> CallResult {
+    execute_call(world, address, &[], energy_limit, depth)
+}
+
+/// Execute the code stored for `address` against `world` with `calldata` (the entry the
+/// smart-contract actuator drives, T02). Returns success, spent energy, and the root
+/// frame's RETURN/REVERT bytes.
+pub fn execute_call(
+    world: &mut World,
+    address: &[u8],
+    calldata: &[u8],
+    energy_limit: u64,
+    depth: usize,
+) -> CallResult {
     let code = world.get_code(address);
-    let e = run_frame(world, address, &code, &[], energy_limit, depth);
-    CallResult { success: halt_is_success(&e.halt), halt: e.halt, energy_used: e.energy_used }
+    let e = run_frame(world, address, &code, calldata, energy_limit, depth);
+    CallResult {
+        success: halt_is_success(&e.halt),
+        halt: e.halt,
+        energy_used: e.energy_used,
+        return_data: e.return_data,
+    }
+}
+
+/// Execute a given `code` (not read from the World) with `calldata` against `world` —
+/// used to run CREATE init/constructor bytecode (T02), whose RETURN bytes become the
+/// deployed runtime code.
+pub fn execute_code(
+    world: &mut World,
+    address: &[u8],
+    code: &[u8],
+    calldata: &[u8],
+    energy_limit: u64,
+    depth: usize,
+) -> CallResult {
+    let e = run_frame(world, address, code, calldata, energy_limit, depth);
+    CallResult {
+        success: halt_is_success(&e.halt),
+        halt: e.halt,
+        energy_used: e.energy_used,
+        return_data: e.return_data,
+    }
 }
 
 /// The one execution loop: memory + stack + journaled World storage + CALL + SELFDESTRUCT.

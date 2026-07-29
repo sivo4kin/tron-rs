@@ -32,10 +32,26 @@ enum JournalEntry {
     Burn { amount: i64 },
 }
 
-/// Storage backend: the journaled in-World map, or a bound single-contract Host.
+/// Read-through backing state for a multi-account World (T02): storage/code/balances/
+/// existence the World doesn't have a *write* for fall through to this (real chain
+/// state). Writes stay in the World's journaled maps, so checkpoint/commit/revert are
+/// unaffected; the actuator flushes the World's dirty maps back on success.
+///
+/// Engine addresses are 20-byte EVM bodies; an implementation maps them to the chain's
+/// 21-byte `0x41||body` addresses.
+pub trait StateBackend {
+    fn get_code(&self, addr: &[u8]) -> Vec<u8>;
+    fn sload(&self, addr: &[u8], slot: U256) -> U256;
+    fn balance(&self, addr: &Address) -> i64;
+    fn account_exists(&self, addr: &Address) -> bool;
+}
+
+/// Storage backend: the journaled in-World map, a bound single-contract Host, or a
+/// read-through [`StateBackend`] over real chain state.
 enum Backend<'h> {
     World,
     Host(&'h mut dyn Host),
+    State(&'h dyn StateBackend),
 }
 
 /// The multi-contract world: per-(address,slot) storage, per-address code, per-account
@@ -91,6 +107,21 @@ impl<'h> World<'h> {
         }
     }
 
+    /// A World whose reads fall through to real chain state ([`StateBackend`]); writes
+    /// are journaled in the World and flushed by the actuator on success (T02).
+    pub fn with_state(backend: &'h dyn StateBackend) -> Self {
+        World {
+            storage: HashMap::new(),
+            code: HashMap::new(),
+            balances: HashMap::new(),
+            accounts: HashSet::new(),
+            suicides: Vec::new(),
+            burned: 0,
+            journal: Vec::new(),
+            backend: Backend::State(backend),
+        }
+    }
+
     pub(crate) fn host_backed(&self) -> bool {
         matches!(self.backend, Backend::Host(_))
     }
@@ -99,13 +130,24 @@ impl<'h> World<'h> {
         self.code.insert(addr.to_vec(), code);
     }
     pub fn get_code(&self, addr: &[u8]) -> Vec<u8> {
-        self.code.get(addr).cloned().unwrap_or_default()
+        if let Some(c) = self.code.get(addr) {
+            return c.clone();
+        }
+        match &self.backend {
+            Backend::State(b) => b.get_code(addr),
+            _ => Vec::new(),
+        }
     }
 
     pub fn sload(&self, addr: &[u8], slot: U256) -> U256 {
         match &self.backend {
             Backend::Host(h) => h.sload(slot),
             Backend::World => self.storage.get(&(addr.to_vec(), slot)).copied().unwrap_or_default(),
+            // Read-through: a written slot (incl. an explicit zero) shadows chain state.
+            Backend::State(b) => match self.storage.get(&(addr.to_vec(), slot)) {
+                Some(v) => *v,
+                None => b.sload(addr, slot),
+            },
         }
     }
     pub(crate) fn sstore(&mut self, addr: &[u8], slot: U256, value: U256) {
@@ -113,15 +155,13 @@ impl<'h> World<'h> {
             // Host writes are immediate + unjournaled (single-contract actuator path,
             // which commits the whole tx atomically).
             Backend::Host(h) => h.sstore(slot, value),
-            Backend::World => {
+            // World + State: journaled map. Always insert (incl. zero) so a written
+            // zero shadows any read-through value; revert restores prev (None -> remove).
+            Backend::World | Backend::State(_) => {
                 let key = (addr.to_vec(), slot);
                 let prev = self.storage.get(&key).copied();
                 self.journal.push(JournalEntry::Storage { key: key.clone(), prev });
-                if value.is_zero() {
-                    self.storage.remove(&key);
-                } else {
-                    self.storage.insert(key, value);
-                }
+                self.storage.insert(key, value);
             }
         }
     }
@@ -139,16 +179,62 @@ impl<'h> World<'h> {
         self.balances.entry(*addr).or_insert(0);
     }
     pub fn balance(&self, addr: &Address) -> i64 {
-        self.balances.get(addr).copied().unwrap_or(0)
+        if let Some(b) = self.balances.get(addr) {
+            return *b;
+        }
+        match &self.backend {
+            Backend::State(b) => b.balance(addr),
+            _ => 0,
+        }
     }
     pub fn account_exists(&self, addr: &Address) -> bool {
-        self.accounts.contains(addr)
+        if self.accounts.contains(addr) {
+            return true;
+        }
+        match &self.backend {
+            Backend::State(b) => b.account_exists(addr),
+            _ => false,
+        }
     }
     pub fn is_suicided(&self, addr: &Address) -> bool {
         self.suicides.contains(addr)
     }
     pub fn burned(&self) -> i64 {
         self.burned
+    }
+
+    /// Move `amount` sun `from` -> `to` in the journaled World (T02 call_value).
+    /// Balances read through to chain state; the actuator flushes the result.
+    pub fn transfer(&mut self, from: &Address, to: &Address, amount: i64) {
+        if amount == 0 {
+            return;
+        }
+        let fb = self.balance(from);
+        let tb = self.balance(to);
+        self.ensure_account(from);
+        self.ensure_account(to);
+        self.write_balance(from, fb - amount);
+        self.write_balance(to, tb + amount);
+    }
+
+    // -- flush accessors (T02): the World's dirty writes, to persist to chain state ---
+
+    /// Every written storage slot as (address, slot, value); a zero value means the
+    /// slot was cleared (delete it in the store).
+    pub fn dirty_storage(&self) -> Vec<(Vec<u8>, U256, U256)> {
+        self.storage.iter().map(|((a, s), v)| (a.clone(), *s, *v)).collect()
+    }
+    /// Every account whose balance changed, as (address, new_balance).
+    pub fn dirty_balances(&self) -> Vec<(Address, i64)> {
+        self.balances.iter().map(|(a, b)| (*a, *b)).collect()
+    }
+    /// Every address whose code was set this run (CREATE), as (address, code).
+    pub fn dirty_code(&self) -> Vec<(Vec<u8>, Vec<u8>)> {
+        self.code.iter().map(|(a, c)| (a.clone(), c.clone())).collect()
+    }
+    /// Addresses marked for deletion by SELFDESTRUCT.
+    pub fn suicided(&self) -> Vec<Address> {
+        self.suicides.clone()
     }
 
     fn write_balance(&mut self, addr: &Address, new: i64) {
@@ -238,12 +324,15 @@ pub enum Halt {
     DepthLimit,
 }
 
-/// Result of the public [`crate::engine::execute`] wrapper.
+/// Result of the public [`crate::engine::execute`] / [`crate::engine::execute_call`]
+/// wrappers.
 #[derive(Debug)]
 pub struct CallResult {
     pub success: bool,
     pub halt: Halt,
     pub energy_used: u64,
+    /// Bytes from the root frame's `RETURN`/`REVERT` (e.g. deployed runtime code).
+    pub return_data: Vec<u8>,
 }
 
 #[cfg(test)]
