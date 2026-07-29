@@ -199,6 +199,24 @@ pub fn apply_transaction<S: KvStore>(
             actuator.validate(state)?;
             actuator.execute(state)
         }
+        ContractType::ClearAbiContract => {
+            let c: protocol::ClearAbiContract = unpack(contract)?;
+            let actuator = crate::clear_abi::ClearAbiActuator::new(&c);
+            actuator.validate(state)?;
+            actuator.execute(state)
+        }
+        ContractType::UpdateSettingContract => {
+            let c: protocol::UpdateSettingContract = unpack(contract)?;
+            let actuator = crate::update_setting::UpdateSettingActuator::new(&c);
+            actuator.validate(state)?;
+            actuator.execute(state)
+        }
+        ContractType::UpdateEnergyLimitContract => {
+            let c: protocol::UpdateEnergyLimitContract = unpack(contract)?;
+            let actuator = crate::update_energy_limit::UpdateEnergyLimitActuator::new(&c);
+            actuator.validate(state)?;
+            actuator.execute(state)
+        }
         other => Err(ActuatorError::Validate(format!(
             "unsupported contract type: {other:?}"
         ))),
