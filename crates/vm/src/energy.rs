@@ -24,6 +24,22 @@ pub const RESET_SSTORE: u64 = 5_000;
 pub const MEMORY_WORD: u64 = 3;
 pub const COPY_WORD: u64 = 3;
 
+/// Energy charged when a system op implicitly creates a new account
+/// (java-tron `EnergyCost.NEW_ACCT_CALL`). Added by CALL and by SELFDESTRUCT
+/// (`getSuicideCost2`) when the destination/inheritor account does not yet exist.
+pub const NEW_ACCT_CALL: u64 = 25_000;
+/// Base energy for `SELFDESTRUCT` (java-tron `EnergyCost` suicide base). Tron's base
+/// is 0; the only variable part is the [`NEW_ACCT_CALL`] surcharge below.
+pub const SUICIDE: u64 = 0;
+
+/// `SELFDESTRUCT` energy cost (java-tron `EnergyCost.getSuicideCost2`, proposal #91):
+/// the suicide base plus [`NEW_ACCT_CALL`] when the beneficiary (inheritor) account
+/// does not exist — the same new-account surcharge CALL pays when it creates the
+/// callee. Audit CS-JTRON-002.
+pub fn suicide_cost(beneficiary_exists: bool) -> u64 {
+    SUICIDE + if beneficiary_exists { 0 } else { NEW_ACCT_CALL }
+}
+
 /// Fixed per-opcode energy tier (java-tron `EnergyCost` static portion). Opcodes
 /// whose cost is purely dynamic return their base here and add the dynamic part
 /// separately.
@@ -44,6 +60,7 @@ pub fn base_cost(op: OpCode) -> u64 {
         Exp => EXP_ENERGY,
         Sload => SLOAD,
         Sstore => 0, // computed by sstore_cost
+        SelfDestruct => SUICIDE, // dynamic surcharge computed by suicide_cost
         // Tron-specific: costs are context-dependent; base tier per java-tron.
         IsContract | IsWitness | TokenBalance | CallTokenValue | CallTokenId => BASE_TIER,
         Call => 40,       // CALL_ENERGY base (java-tron CALL_ENERGY); dynamic parts added in-op
@@ -90,6 +107,18 @@ mod tests {
         assert_eq!(sstore_cost(true, false), 20_000); // set
         assert_eq!(sstore_cost(false, true), 5_000); // clear
         assert_eq!(sstore_cost(false, false), 5_000); // reset
+    }
+
+    #[test]
+    fn suicide_charges_new_account_only_when_beneficiary_absent() {
+        // existing beneficiary -> just the (zero) base
+        assert_eq!(suicide_cost(true), SUICIDE);
+        // absent beneficiary -> base + NEW_ACCT_CALL surcharge
+        assert_eq!(suicide_cost(false), SUICIDE + NEW_ACCT_CALL);
+        assert_eq!(NEW_ACCT_CALL, 25_000);
+        // the surcharge is exactly the extra cost
+        assert_eq!(suicide_cost(false) - suicide_cost(true), NEW_ACCT_CALL);
+        assert_eq!(base_cost(OpCode::SelfDestruct), SUICIDE);
     }
 
     #[test]

@@ -57,6 +57,7 @@ pub enum OpCode {
     Return = 0xf3,
     Revert = 0xfd,
     Invalid = 0xfe,
+    SelfDestruct = 0xff,
 }
 
 impl OpCode {
@@ -111,6 +112,7 @@ impl OpCode {
             0xf3 => Return,
             0xfd => Revert,
             0xfe => Invalid,
+            0xff => SelfDestruct,
             _ => return None,
         })
     }
@@ -138,9 +140,11 @@ mod tests {
 
     #[test]
     fn decode_roundtrips() {
-        for b in [0x00u8, 0x01, 0x0a, 0x55, 0x60, 0xd0, 0xda, 0xf3] {
+        for b in [0x00u8, 0x01, 0x0a, 0x55, 0x60, 0xd0, 0xda, 0xf3, 0xff] {
             assert_eq!(OpCode::from_u8(b).unwrap() as u8, b);
         }
+        assert_eq!(OpCode::from_u8(0xff).unwrap(), OpCode::SelfDestruct);
+        assert!(!OpCode::SelfDestruct.is_tron_specific());
         assert_eq!(OpCode::from_u8(0x0c), None); // unassigned
     }
 }

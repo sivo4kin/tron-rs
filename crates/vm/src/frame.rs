@@ -14,7 +14,8 @@ use crate::energy::{base_cost, sstore_cost};
 use crate::opcode::OpCode;
 use crate::EnergyMeter;
 use primitive_types::U256;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
+use tron_types::Address;
 
 /// EVM call-depth limit.
 pub const MAX_CALL_DEPTH: usize = 1024;
@@ -23,14 +24,34 @@ type Key = (Vec<u8>, U256);
 
 enum JournalEntry {
     Storage { key: Key, prev: Option<U256> },
+    /// Prior balance of `addr` before a write (SELFDESTRUCT transfer/burn).
+    Balance { addr: Address, prev: i64 },
+    /// `addr` was newly registered as existing (undo: drop it again).
+    AccountCreate { addr: Address },
+    /// `addr` was marked for deletion (undo: unmark it).
+    Suicide { addr: Address },
+    /// `amount` was added to the burn accumulator (undo: subtract it).
+    Burn { amount: i64 },
 }
 
-/// The multi-contract world: per-(address,slot) storage, per-address code, and a
-/// journal enabling checkpoint/revert of storage mutations.
+/// The multi-contract world: per-(address,slot) storage, per-address code,
+/// per-account balances / existence / deletion marks, and a journal enabling
+/// checkpoint/revert of every mutation.
+///
+/// Accounts here are keyed by the full 21-byte [`Address`] (`0x41` + 20 body), so the
+/// SELFDESTRUCT self-inheritance check compares all 21 bytes (audit CS-JTRON-012).
 #[derive(Default)]
 pub struct World {
     storage: HashMap<Key, U256>,
     code: HashMap<Vec<u8>, Vec<u8>>,
+    balances: HashMap<Address, i64>,
+    /// Existence registry (java-tron account store `has`): drives the SELFDESTRUCT
+    /// new-account energy surcharge.
+    accounts: HashSet<Address>,
+    /// Contracts marked for deletion by SELFDESTRUCT in this (sub-)execution.
+    suicides: Vec<Address>,
+    /// Sun destroyed by self-inheriting SELFDESTRUCTs (beneficiary == contract).
+    burned: i64,
     journal: Vec<JournalEntry>,
 }
 
@@ -57,6 +78,76 @@ impl World {
             self.storage.insert(key, value);
         }
     }
+    // -- balances / account existence / suicide (SELFDESTRUCT) ------------
+
+    /// Seed an account's balance and mark it existing (test/setup helper; not journaled).
+    pub fn set_balance(&mut self, addr: &Address, bal: i64) {
+        self.accounts.insert(*addr);
+        self.balances.insert(*addr, bal);
+    }
+    /// Register an existing zero-balance account (test/setup helper; not journaled).
+    pub fn create_account(&mut self, addr: &Address) {
+        self.accounts.insert(*addr);
+        self.balances.entry(*addr).or_insert(0);
+    }
+    pub fn balance(&self, addr: &Address) -> i64 {
+        self.balances.get(addr).copied().unwrap_or(0)
+    }
+    /// Whether `addr` exists in the account store (java-tron `AccountStore.has`).
+    pub fn account_exists(&self, addr: &Address) -> bool {
+        self.accounts.contains(addr)
+    }
+    /// Whether `addr` was marked for deletion by a SELFDESTRUCT.
+    pub fn is_suicided(&self, addr: &Address) -> bool {
+        self.suicides.contains(addr)
+    }
+    /// Total sun destroyed by self-inheriting SELFDESTRUCTs.
+    pub fn burned(&self) -> i64 {
+        self.burned
+    }
+
+    /// Journaled balance write.
+    fn write_balance(&mut self, addr: &Address, new: i64) {
+        let prev = self.balance(addr);
+        self.journal.push(JournalEntry::Balance { addr: *addr, prev });
+        self.balances.insert(*addr, new);
+    }
+    /// Journaled account registration (no-op if already present).
+    fn ensure_account(&mut self, addr: &Address) {
+        if self.accounts.insert(*addr) {
+            self.journal.push(JournalEntry::AccountCreate { addr: *addr });
+        }
+    }
+
+    /// SELFDESTRUCT state transition (java-tron `Program.suicide`): move the whole
+    /// balance of `contract` to `beneficiary`, or **burn** it when
+    /// `beneficiary == contract` — compared over the full 21-byte [`Address`], so a
+    /// 20-byte prefix match with a different 21st byte is NOT self (audit CS-JTRON-012).
+    /// Then mark `contract` for deletion. All effects are journaled, so a reverting
+    /// parent CALL rolls them back. Marking is idempotent per frame.
+    pub fn suicide(&mut self, contract: &Address, beneficiary: &Address) {
+        let bal = self.balance(contract);
+        if beneficiary == contract {
+            // Self-inheritance: the account is deleted, so its balance is destroyed.
+            self.write_balance(contract, 0);
+            if bal != 0 {
+                self.journal.push(JournalEntry::Burn { amount: bal });
+                self.burned = self.burned.saturating_add(bal);
+            }
+        } else {
+            // Transferring to the inheritor creates it if absent (what the
+            // NEW_ACCT_CALL surcharge paid for).
+            self.ensure_account(beneficiary);
+            let benef_bal = self.balance(beneficiary);
+            self.write_balance(contract, 0);
+            self.write_balance(beneficiary, benef_bal.saturating_add(bal));
+        }
+        if !self.suicides.contains(contract) {
+            self.journal.push(JournalEntry::Suicide { addr: *contract });
+            self.suicides.push(*contract);
+        }
+    }
+
     fn checkpoint(&self) -> usize {
         self.journal.len()
     }
@@ -72,6 +163,18 @@ impl World {
                         self.storage.remove(&key);
                     }
                 },
+                JournalEntry::Balance { addr, prev } => {
+                    self.balances.insert(addr, prev);
+                }
+                JournalEntry::AccountCreate { addr } => {
+                    self.accounts.remove(&addr);
+                }
+                JournalEntry::Suicide { addr } => {
+                    self.suicides.retain(|a| *a != addr);
+                }
+                JournalEntry::Burn { amount } => {
+                    self.burned -= amount;
+                }
             }
         }
     }
@@ -88,6 +191,7 @@ pub enum Halt {
     Stop,
     Return,
     Revert,
+    SelfDestruct,
     OutOfEnergy,
     StackUnderflow,
     BadOpcode(u8),
@@ -183,6 +287,27 @@ pub fn execute(
             }
             OpCode::Return => return CallResult { success: true, halt: Halt::Return, energy_used: meter.used },
             OpCode::Revert => return CallResult { success: false, halt: Halt::Revert, energy_used: meter.used },
+            OpCode::SelfDestruct => {
+                // Beneficiary = low 20 bytes of the popped word, as a 21-byte Tron
+                // address (0x41 prefix). The running contract's own 21-byte address
+                // is likewise `0x41` + its 20-byte `address`.
+                let word = pop!();
+                let wb = word.to_big_endian();
+                let benef_body = <[u8; 20]>::try_from(&wb[12..32]).unwrap();
+                let beneficiary = Address::from_body(benef_body);
+                let self_addr = match <[u8; 20]>::try_from(address) {
+                    Ok(body) => Address::from_body(body),
+                    // Non-20-byte contract address can't form a Tron address.
+                    Err(_) => return CallResult { success: false, halt: Halt::BadOpcode(byte), energy_used: meter.used },
+                };
+                // getSuicideCost2: surcharge when the beneficiary account is absent.
+                let cost = crate::energy::suicide_cost(world.account_exists(&beneficiary));
+                if !meter.charge(cost) {
+                    return CallResult { success: false, halt: Halt::OutOfEnergy, energy_used: meter.used };
+                }
+                world.suicide(&self_addr, &beneficiary);
+                return CallResult { success: true, halt: Halt::SelfDestruct, energy_used: meter.used };
+            }
             other => return CallResult { success: false, halt: Halt::BadOpcode(other as u8), energy_used: meter.used },
         }
         pc += 1;
@@ -298,5 +423,119 @@ mod tests {
         assert_eq!(world.sload(&a, U256::from(1)), U256::from(10));
         world.revert_to(cp1);
         assert_eq!(world.sload(&a, U256::from(1)), U256::zero());
+    }
+
+    // -- SELFDESTRUCT (H03 / CS-JTRON-002, -012) --------------------------
+
+    /// Body-20 -> the beneficiary address a `PUSH1 lo; SELFDESTRUCT` program targets.
+    fn benef_of(lo: u8) -> Address {
+        let mut b = [0u8; 20];
+        b[19] = lo;
+        Address::from_body(b)
+    }
+
+    /// Run `PUSH1 lo; SELFDESTRUCT` from a contract seeded with `bal`; the caller
+    /// pre-registers the beneficiary iff `benef_exists`. Returns (energy_used, world, contract).
+    fn run_suicide(lo: u8, bal: i64, benef_exists: bool) -> (u64, World, Address) {
+        let mut world = World::new();
+        let cbody = [0xaa; 20];
+        let contract = Address::from_body(cbody);
+        world.set_balance(&contract, bal);
+        if benef_exists {
+            world.create_account(&benef_of(lo));
+        }
+        world.set_code(&cbody, vec![Push1 as u8, lo, SelfDestruct as u8]);
+        let r = execute(&mut world, &cbody, 1_000_000, 0);
+        assert!(r.success);
+        assert_eq!(r.halt, Halt::SelfDestruct);
+        (r.energy_used, world, contract)
+    }
+
+    #[test]
+    fn suicide_to_absent_beneficiary_charges_new_account_energy() {
+        let (energy, world, contract) = run_suicide(0x07, 1_000, false);
+        assert!(energy >= crate::energy::NEW_ACCT_CALL, "energy {energy} must include NEW_ACCT_CALL");
+        // balance moved to the (now created) beneficiary; contract drained + marked.
+        assert_eq!(world.balance(&benef_of(0x07)), 1_000);
+        assert_eq!(world.balance(&contract), 0);
+        assert!(world.account_exists(&benef_of(0x07)));
+        assert!(world.is_suicided(&contract));
+        assert_eq!(world.burned(), 0); // transfer, not burn
+    }
+
+    #[test]
+    fn suicide_new_account_surcharge_is_exactly_new_acct_call() {
+        // The only difference between the two runs is beneficiary existence.
+        let (absent, _, _) = run_suicide(0x07, 10, false);
+        let (present, _, _) = run_suicide(0x07, 10, true);
+        assert_eq!(absent - present, crate::energy::NEW_ACCT_CALL);
+    }
+
+    #[test]
+    fn suicide_to_self_burns_balance_full_21_byte_match() {
+        let mut world = World::new();
+        let c = Address::from_body([0x11; 20]); // 21 bytes: 0x41 + 0x11*20
+        world.set_balance(&c, 5_000);
+        world.suicide(&c, &c); // beneficiary == contract, all 21 bytes equal
+        assert_eq!(world.balance(&c), 0);
+        assert_eq!(world.burned(), 5_000); // burned, not transferred to anyone
+        assert!(world.is_suicided(&c));
+    }
+
+    #[test]
+    fn twenty_byte_prefix_but_different_21st_byte_is_not_self() {
+        // self and beneficiary share the first 20 bytes but differ in the 21st.
+        let mut sa = [0x11u8; 21];
+        sa[0] = 0x41;
+        let self_addr = Address::from_bytes(sa).unwrap(); // [0x41, 0x11*20]
+        let mut bb = [0x11u8; 21];
+        bb[0] = 0x41;
+        bb[20] = 0x22; // 21st byte differs
+        let benef = Address::from_bytes(bb).unwrap(); // [0x41, 0x11*19, 0x22]
+        // sanity: first 20 bytes identical, 21st differs.
+        assert_eq!(self_addr.as_bytes()[..20], benef.as_bytes()[..20]);
+        assert_ne!(self_addr.as_bytes()[20], benef.as_bytes()[20]);
+
+        let mut world = World::new();
+        world.set_balance(&self_addr, 7_000);
+        world.suicide(&self_addr, &benef);
+        // NOT treated as self -> transfer to beneficiary, nothing burned.
+        assert_eq!(world.burned(), 0);
+        assert_eq!(world.balance(&self_addr), 0);
+        assert_eq!(world.balance(&benef), 7_000);
+    }
+
+    #[test]
+    fn suicide_is_journaled_and_reverts() {
+        let mut world = World::new();
+        let c = Address::from_body([0x33; 20]);
+        let b = Address::from_body([0x44; 20]);
+        world.set_balance(&c, 900);
+        world.create_account(&b); // beneficiary already exists
+
+        let cp = world.checkpoint();
+        world.suicide(&c, &b);
+        assert_eq!(world.balance(&b), 900);
+        assert_eq!(world.balance(&c), 0);
+        assert!(world.is_suicided(&c));
+
+        world.revert_to(cp);
+        assert_eq!(world.balance(&c), 900); // balance restored
+        assert_eq!(world.balance(&b), 0);
+        assert!(!world.is_suicided(&c)); // deletion mark undone
+    }
+
+    #[test]
+    fn reverting_rolls_back_a_self_inheriting_suicide() {
+        let mut world = World::new();
+        let c = Address::from_body([0x55; 20]);
+        world.set_balance(&c, 1_234);
+        let cp = world.checkpoint();
+        world.suicide(&c, &c);
+        assert_eq!(world.burned(), 1_234);
+        world.revert_to(cp);
+        assert_eq!(world.burned(), 0);
+        assert_eq!(world.balance(&c), 1_234);
+        assert!(!world.is_suicided(&c));
     }
 }
