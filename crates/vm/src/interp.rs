@@ -1,14 +1,15 @@
-//! A stack-based TVM interpreter over U256 words, with pluggable state access.
+//! Single-contract execution entry over a persistent [`Host`] — the actuator storage
+//! path (`StateHost`).
 //!
-//! P2 (SPEC section 5.2): validates the execution + energy model as a real (if
-//! subset) contract executor — full 256-bit arithmetic, control flow, memory-less
-//! storage via a [`Host`], and per-step energy metering against [`crate::energy`].
-//! This is the clean-room execution core; the revm-adaptation decision reuses this
-//! energy model and opcode table as the reference.
+//! Since T01 this is a thin adapter over the ONE unified engine ([`crate::frame`]): it
+//! binds the `Host` as the storage backend of a fresh `World` and runs the engine loop.
+//! So this path shares the exact memory / opcode / energy model with the multi-account
+//! engine — and now genuinely has EVM memory + calldata. Inter-contract CALL here
+//! reaches precompiles only (a single `Host` exposes no other contract's code), and
+//! SELFDESTRUCT is typed-unsupported on this path (halts `BadOpcode(0xff)`).
 
-use crate::energy::{base_cost, sstore_cost};
-use crate::opcode::OpCode;
-use crate::EnergyMeter;
+use crate::engine::run_frame;
+use crate::frame::{Halt as EngineHalt, World};
 use primitive_types::U256;
 
 /// Contract state access (persistent storage). SLOAD/SSTORE go through this.
@@ -36,6 +37,7 @@ impl Host for MemoryHost {
     }
 }
 
+/// Why single-contract execution stopped (the public, narrower surface actuators use).
 #[derive(Debug, PartialEq, Eq)]
 pub enum Halt {
     Stop,
@@ -65,294 +67,34 @@ pub fn run(code: &[u8], limit: u64, host: &mut dyn Host) -> Outcome {
     run_with_input(code, &[], limit, host)
 }
 
-/// Byte-addressed memory that grows in 32-byte words, charging expansion energy.
-#[derive(Default)]
-struct Memory {
-    data: Vec<u8>,
-}
-
-impl Memory {
-    fn words(&self) -> u64 {
-        (self.data.len() as u64 + 31) / 32
-    }
-    /// Ensure at least `end` bytes exist; returns the expansion energy to charge.
-    fn expand_to(&mut self, end: usize) -> u64 {
-        if end <= self.data.len() {
-            return 0;
-        }
-        let cur = self.words();
-        let new_words = (end as u64 + 31) / 32;
-        self.data.resize((new_words * 32) as usize, 0);
-        crate::energy::memory_expansion_cost(cur, new_words)
-    }
-    fn load(&self, off: usize) -> U256 {
-        let mut buf = [0u8; 32];
-        for (i, b) in buf.iter_mut().enumerate() {
-            *b = self.data.get(off + i).copied().unwrap_or(0);
-        }
-        U256::from_big_endian(&buf)
-    }
-    fn store(&mut self, off: usize, val: U256) {
-        let bytes = val.to_big_endian();
-        self.data[off..off + 32].copy_from_slice(&bytes);
-    }
-}
-
 /// Run `code` with `calldata` and an energy `limit` against `host`.
 pub fn run_with_input(code: &[u8], calldata: &[u8], limit: u64, host: &mut dyn Host) -> Outcome {
-    let mut meter = EnergyMeter::new(limit);
-    let mut stack: Vec<U256> = Vec::new();
-    let mut mem = Memory::default();
-    let mut last_return_data: Vec<u8> = Vec::new();
-    let mut pc = 0usize;
-
-    macro_rules! pop {
-        () => {
-            match stack.pop() {
-                Some(v) => v,
-                None => return done(Halt::StackUnderflow, &stack, &meter),
-            }
-        };
+    // The single executing contract's storage routes to the host regardless of address,
+    // so this sentinel address is immaterial.
+    const SELF_ADDR: [u8; 20] = [0u8; 20];
+    let mut world = World::with_host(host);
+    let e = run_frame(&mut world, &SELF_ADDR, code, calldata, limit, 0);
+    Outcome {
+        halt: map_halt(e.halt),
+        stack_top: e.stack_top,
+        energy_used: e.energy_used,
+        return_data: e.return_data,
     }
-    macro_rules! push {
-        ($v:expr) => {{
-            if stack.len() >= STACK_LIMIT {
-                return done(Halt::StackOverflow, &stack, &meter);
-            }
-            stack.push($v);
-        }};
-    }
-
-    while pc < code.len() {
-        let byte = code[pc];
-        let op = match OpCode::from_u8(byte) {
-            Some(o) => o,
-            None => return done(Halt::BadOpcode(byte), &stack, &meter),
-        };
-
-        // Static per-op base cost; SSTORE is charged dynamically below.
-        if op != OpCode::Sstore && !meter.charge(base_cost(op)) {
-            return done(Halt::OutOfEnergy, &stack, &meter);
-        }
-
-        match op {
-            OpCode::Stop => return done(Halt::Stop, &stack, &meter),
-            OpCode::Add => { let (a,b)=(pop!(),pop!()); push!(a.overflowing_add(b).0); }
-            OpCode::Sub => { let (a,b)=(pop!(),pop!()); push!(a.overflowing_sub(b).0); }
-            OpCode::Mul => { let (a,b)=(pop!(),pop!()); push!(a.overflowing_mul(b).0); }
-            OpCode::Div => { let (a,b)=(pop!(),pop!()); push!(if b.is_zero(){U256::zero()}else{a/b}); }
-            OpCode::Mod => { let (a,b)=(pop!(),pop!()); push!(if b.is_zero(){U256::zero()}else{a%b}); }
-            OpCode::Exp => { let (a,b)=(pop!(),pop!()); push!(a.overflowing_pow(b).0); }
-            OpCode::Lt => { let (a,b)=(pop!(),pop!()); push!(U256::from(u8::from(a<b))); }
-            OpCode::Gt => { let (a,b)=(pop!(),pop!()); push!(U256::from(u8::from(a>b))); }
-            OpCode::Eq => { let (a,b)=(pop!(),pop!()); push!(U256::from(u8::from(a==b))); }
-            OpCode::IsZero => { let a=pop!(); push!(U256::from(u8::from(a.is_zero()))); }
-            OpCode::And => { let (a,b)=(pop!(),pop!()); push!(a & b); }
-            OpCode::Or => { let (a,b)=(pop!(),pop!()); push!(a | b); }
-            OpCode::Xor => { let (a,b)=(pop!(),pop!()); push!(a ^ b); }
-            OpCode::Pop => { let _=pop!(); }
-            OpCode::Dup1 => {
-                let a = match stack.last() {
-                    Some(v) => *v,
-                    None => return done(Halt::StackUnderflow, &stack, &meter),
-                };
-                push!(a);
-            }
-            OpCode::Swap1 => {
-                let n = stack.len();
-                if n < 2 { return done(Halt::StackUnderflow, &stack, &meter); }
-                stack.swap(n-1, n-2);
-            }
-            OpCode::Push1 => {
-                pc += 1;
-                let v = *code.get(pc).unwrap_or(&0);
-                push!(U256::from(v));
-            }
-            OpCode::Push2 => {
-                let hi = *code.get(pc + 1).unwrap_or(&0) as u16;
-                let lo = *code.get(pc + 2).unwrap_or(&0) as u16;
-                pc += 2;
-                push!(U256::from((hi << 8) | lo));
-            }
-            OpCode::CallDataLoad => {
-                let off = pop!().low_u64() as usize;
-                let mut buf = [0u8; 32];
-                for (i, b) in buf.iter_mut().enumerate() {
-                    *b = calldata.get(off + i).copied().unwrap_or(0);
-                }
-                push!(U256::from_big_endian(&buf));
-            }
-            OpCode::CallDataSize => push!(U256::from(calldata.len())),
-            OpCode::ReturnDataSize => push!(U256::from(last_return_data.len())),
-            OpCode::ReturnDataCopy => {
-                let dest = pop!().low_u64() as usize;
-                let off = pop!().low_u64() as usize;
-                let len = pop!().low_u64() as usize;
-                if !meter.charge(mem.expand_to(dest.saturating_add(len))) {
-                    return done(Halt::OutOfEnergy, &stack, &meter);
-                }
-                for i in 0..len {
-                    mem.data[dest + i] = last_return_data.get(off + i).copied().unwrap_or(0);
-                }
-            }
-            OpCode::CallDataCopy => {
-                let dest = pop!().low_u64() as usize;
-                let off = pop!().low_u64() as usize;
-                let len = pop!().low_u64() as usize;
-                if !meter.charge(mem.expand_to(dest.saturating_add(len))) {
-                    return done(Halt::OutOfEnergy, &stack, &meter);
-                }
-                for i in 0..len {
-                    mem.data[dest + i] = calldata.get(off + i).copied().unwrap_or(0);
-                }
-            }
-            OpCode::Mload => {
-                let off = pop!().low_u64() as usize;
-                if !meter.charge(mem.expand_to(off.saturating_add(32))) {
-                    return done(Halt::OutOfEnergy, &stack, &meter);
-                }
-                push!(mem.load(off));
-            }
-            OpCode::Mstore => {
-                let off = pop!().low_u64() as usize;
-                let val = pop!();
-                if !meter.charge(mem.expand_to(off.saturating_add(32))) {
-                    return done(Halt::OutOfEnergy, &stack, &meter);
-                }
-                mem.store(off, val);
-            }
-            OpCode::Mstore8 => {
-                let off = pop!().low_u64() as usize;
-                let val = pop!();
-                if !meter.charge(mem.expand_to(off.saturating_add(1))) {
-                    return done(Halt::OutOfEnergy, &stack, &meter);
-                }
-                mem.data[off] = (val.low_u64() & 0xff) as u8;
-            }
-            OpCode::Sload => {
-                let key = pop!();
-                push!(host.sload(key));
-            }
-            OpCode::Sstore => {
-                let key = pop!();
-                let value = pop!();
-                let current = host.sload(key);
-                let cost = sstore_cost(current.is_zero(), value.is_zero());
-                if !meter.charge(cost) {
-                    return done(Halt::OutOfEnergy, &stack, &meter);
-                }
-                host.sstore(key, value);
-            }
-            OpCode::Jump => {
-                let dest = pop!();
-                let d = dest.low_u64() as usize;
-                if dest > U256::from(code.len()) || code.get(d) != Some(&(OpCode::Jumpdest as u8)) {
-                    return done(Halt::BadJump, &stack, &meter);
-                }
-                pc = d; continue;
-            }
-            OpCode::Jumpi => {
-                let dest = pop!();
-                let cond = pop!();
-                if !cond.is_zero() {
-                    let d = dest.low_u64() as usize;
-                    if dest > U256::from(code.len()) || code.get(d) != Some(&(OpCode::Jumpdest as u8)) {
-                        return done(Halt::BadJump, &stack, &meter);
-                    }
-                    pc = d; continue;
-                }
-            }
-            OpCode::Call => {
-                // EVM CALL: gas, addr, value, argsOffset, argsLen, retOffset, retLen.
-                let _gas = pop!();
-                let addr = pop!();
-                let _value = pop!();
-                let args_off = pop!().low_u64() as usize;
-                let args_len = pop!().low_u64() as usize;
-                let ret_off = pop!().low_u64() as usize;
-                let ret_len = pop!().low_u64() as usize;
-
-                // Read call args from memory.
-                if !meter.charge(mem.expand_to(args_off.saturating_add(args_len))) {
-                    return done(Halt::OutOfEnergy, &stack, &meter);
-                }
-                let input = mem.data.get(args_off..args_off + args_len).unwrap_or(&[]).to_vec();
-
-                // Currently dispatch precompile targets (0x01..=0x04); contract-to-
-                // contract with storage context is a documented follow-up (pushes 0).
-                let low = (addr.low_u64() & 0xff) as u8;
-                let (success, output) = match crate::precompile::energy_for(low, &input) {
-                    Some(cost) if addr.leading_zeros() >= 248 => {
-                        if !meter.charge(cost) {
-                            return done(Halt::OutOfEnergy, &stack, &meter);
-                        }
-                        (true, crate::precompile::execute(low, &input).unwrap_or_default())
-                    }
-                    _ => (false, Vec::new()),
-                };
-
-                // Record return data (for RETURNDATASIZE/COPY) and write the
-                // truncated copy into memory at retOffset.
-                last_return_data = output.clone();
-                if success && ret_len > 0 {
-                    if !meter.charge(mem.expand_to(ret_off.saturating_add(ret_len))) {
-                        return done(Halt::OutOfEnergy, &stack, &meter);
-                    }
-                    let n = ret_len.min(output.len());
-                    mem.data[ret_off..ret_off + n].copy_from_slice(&output[..n]);
-                }
-                push!(U256::from(u8::from(success)));
-            }
-            OpCode::Jumpdest => {}
-            OpCode::Return | OpCode::Revert => {
-                // RETURN/REVERT: pop memory offset + length, capture the output.
-                let off = pop!().low_u64() as usize;
-                let len = pop!().low_u64() as usize;
-                if !meter.charge(mem.expand_to(off.saturating_add(len))) {
-                    return done(Halt::OutOfEnergy, &stack, &meter);
-                }
-                let output = mem.data.get(off..off + len).unwrap_or(&[]).to_vec();
-                let halt = if op == OpCode::Return { Halt::Return } else { Halt::Revert };
-                return done_out(halt, &stack, &meter, output);
-            }
-            OpCode::VoteWitness => {
-                // Stack (java-tron getVoteWitnessCost2), top-first: amountArrayLength,
-                // amountArrayOffset, witnessArrayLength, witnessArrayOffset.
-                let amount_len = pop!().low_u64();
-                let amount_off = pop!().low_u64();
-                let witness_len = pop!().low_u64();
-                let witness_off = pop!().low_u64();
-                // VOTE_WITNESS base (java EnergyCost.VOTE_WITNESS).
-                if !meter.charge(crate::energy::VOTE_WITNESS) {
-                    return done(Halt::OutOfEnergy, &stack, &meter);
-                }
-                // CS-JTRON-005: memory must cover offset + len*32 + 32 for each array;
-                // the trailing size word is charged even when len == 0. `expand_to`
-                // both grows memory and returns the expansion energy to charge.
-                let needed =
-                    crate::energy::vote_witness_mem_needed(witness_off, witness_len, amount_off, amount_len);
-                if !meter.charge(mem.expand_to(needed as usize)) {
-                    return done(Halt::OutOfEnergy, &stack, &meter);
-                }
-                // Recording the vote needs a witness/vote host, which this
-                // single-contract core lacks; the vote effect is not applied here
-                // (documented, same posture as SELFDESTRUCT in interp). Push success=0
-                // to preserve stack discipline.
-                push!(U256::zero());
-            }
-            other => return done(Halt::BadOpcode(other as u8), &stack, &meter),
-        }
-        pc += 1;
-    }
-    done(Halt::Stop, &stack, &meter)
 }
 
-fn done(halt: Halt, stack: &[U256], meter: &EnergyMeter) -> Outcome {
-    Outcome { halt, stack_top: stack.last().copied(), energy_used: meter.used, return_data: Vec::new() }
-}
-
-fn done_out(halt: Halt, stack: &[U256], meter: &EnergyMeter, output: Vec<u8>) -> Outcome {
-    Outcome { halt, stack_top: stack.last().copied(), energy_used: meter.used, return_data: output }
+fn map_halt(h: EngineHalt) -> Halt {
+    match h {
+        // SelfDestruct / DepthLimit cannot occur on the single-contract host path
+        // (SELFDESTRUCT is unsupported there; depth starts at 0). Mapped defensively.
+        EngineHalt::Stop | EngineHalt::SelfDestruct => Halt::Stop,
+        EngineHalt::Return => Halt::Return,
+        EngineHalt::Revert => Halt::Revert,
+        EngineHalt::OutOfEnergy | EngineHalt::DepthLimit => Halt::OutOfEnergy,
+        EngineHalt::StackUnderflow => Halt::StackUnderflow,
+        EngineHalt::StackOverflow => Halt::StackOverflow,
+        EngineHalt::BadOpcode(b) => Halt::BadOpcode(b),
+        EngineHalt::BadJump => Halt::BadJump,
+    }
 }
 
 #[cfg(test)]
@@ -366,22 +108,18 @@ mod tests {
 
     #[test]
     fn u256_arithmetic() {
-        // PUSH1 2, PUSH1 3, ADD -> 5
         let out = run_mem(&[Push1 as u8, 2, Push1 as u8, 3, Add as u8, Stop as u8], 1000);
         assert_eq!(out.stack_top, Some(U256::from(5)));
     }
 
     #[test]
     fn u256_overflow_wraps() {
-        // (2^255) * 2 wraps to 0 in 256-bit; build via EXP: PUSH1 255, PUSH1 2, EXP -> 2^255
-        // then PUSH1 2, MUL -> 2^256 mod 2^256 = 0
         let code = [Push1 as u8, 255, Push1 as u8, 2, Exp as u8, Push1 as u8, 2, Mul as u8, Stop as u8];
         assert_eq!(run_mem(&code, 100000).stack_top, Some(U256::zero()));
     }
 
     #[test]
     fn sstore_then_sload_persists_and_meters() {
-        // PUSH1 42, PUSH1 7, SSTORE ; PUSH1 7, SLOAD -> 42
         let code = [
             Push1 as u8, 42, Push1 as u8, 7, Sstore as u8,
             Push1 as u8, 7, Sload as u8, Stop as u8,
@@ -390,64 +128,54 @@ mod tests {
         let out = run(&code, 100000, &mut host);
         assert_eq!(out.halt, Halt::Stop);
         assert_eq!(out.stack_top, Some(U256::from(42)));
-        // storage persisted in the host
         assert_eq!(host.sload(U256::from(7)), U256::from(42));
-        // SET_SSTORE (20000) dominates the energy used
         assert!(out.energy_used >= 20000);
     }
 
     #[test]
     fn sstore_out_of_energy_before_write() {
-        // not enough energy to cover SET_SSTORE -> storage must NOT change
         let code = [Push1 as u8, 42, Push1 as u8, 7, Sstore as u8];
         let mut host = MemoryHost::default();
-        let out = run(&code, 100, &mut host); // pushes fit, sstore(20000) does not
+        let out = run(&code, 100, &mut host);
         assert_eq!(out.halt, Halt::OutOfEnergy);
-        assert_eq!(host.sload(U256::from(7)), U256::zero()); // unchanged
+        assert_eq!(host.sload(U256::from(7)), U256::zero());
     }
 
     #[test]
     fn clearing_a_slot_costs_less_than_setting() {
-        // set slot (20000) then clear it (5000)
         let set = [Push1 as u8, 1, Push1 as u8, 3, Sstore as u8, Stop as u8];
         let clear = [Push1 as u8, 0, Push1 as u8, 3, Sstore as u8, Stop as u8];
         let mut host = MemoryHost::default();
         let e_set = run(&set, 100000, &mut host).energy_used;
         let e_clear = run(&clear, 100000, &mut host).energy_used;
         assert!(e_set > e_clear, "set {e_set} should exceed clear {e_clear}");
-        assert!(host.sload(U256::from(3)).is_zero()); // cleared
+        assert!(host.sload(U256::from(3)).is_zero());
     }
 
     #[test]
     fn loop_with_jumpi_counts_down() {
-        // storage[0] = 3; loop: dec until zero. Simplified: just prove JUMPI loop
-        // executes multiple times by summing. PUSH1 3 as counter is enough to
-        // exercise the back-edge; here we verify a taken then not-taken branch.
         let code = [
-            Push1 as u8, 1, Push1 as u8, 7, Jumpi as u8,   // cond=1 -> jump to 7
-            Push1 as u8, 0xff,                               // skipped
-            Jumpdest as u8, Push1 as u8, 9, Stop as u8,      // @7
+            Push1 as u8, 1, Push1 as u8, 7, Jumpi as u8,
+            Push1 as u8, 0xff,
+            Jumpdest as u8, Push1 as u8, 9, Stop as u8,
         ];
         assert_eq!(run_mem(&code, 1000).halt, Halt::Stop);
     }
 
     #[test]
     fn mstore_then_mload_roundtrips_and_charges_expansion() {
-        // PUSH1 42, PUSH1 0, MSTORE ; PUSH1 0, MLOAD -> 42
         let code = [Push1 as u8, 42, Push1 as u8, 0, Mstore as u8, Push1 as u8, 0, Mload as u8, Stop as u8];
         let out = run_mem(&code, 100000);
         assert_eq!(out.halt, Halt::Stop);
         assert_eq!(out.stack_top, Some(U256::from(42)));
-        // memory expansion (one word) was charged on top of the base costs
         assert!(out.energy_used > 0);
     }
 
     #[test]
     fn calldataload_reads_input_word() {
-        // CALLDATALOAD at offset 0 reads the first 32 bytes of calldata as a word
         let code = [Push1 as u8, 0, CallDataLoad as u8, Stop as u8];
         let mut calldata = [0u8; 32];
-        calldata[31] = 7; // big-endian -> value 7
+        calldata[31] = 7;
         let out = run_with_input(&code, &calldata, 100000, &mut MemoryHost::default());
         assert_eq!(out.stack_top, Some(U256::from(7)));
     }
@@ -461,8 +189,6 @@ mod tests {
 
     #[test]
     fn calldatacopy_into_memory_then_mload() {
-        // copy 32 bytes of calldata to mem[0], then MLOAD 0
-        // PUSH1 32(len) PUSH1 0(src) PUSH1 0(dest) CALLDATACOPY ; PUSH1 0 MLOAD
         let code = [
             Push1 as u8, 32, Push1 as u8, 0, Push1 as u8, 0, CallDataCopy as u8,
             Push1 as u8, 0, Mload as u8, Stop as u8,
@@ -475,14 +201,6 @@ mod tests {
 
     #[test]
     fn call_to_sha256_precompile_from_bytecode() {
-        // Put "abc" in memory at 0, CALL sha256 (addr 2) with args mem[0..3],
-        // return 32 bytes to mem[32], then MLOAD 32 -> the hash's first word.
-        // Program:
-        //   PUSH1 'a'(0x61) PUSH1 0 MSTORE8   (mem[0]=a)
-        //   PUSH1 'b'(0x62) PUSH1 1 MSTORE8
-        //   PUSH1 'c'(0x63) PUSH1 2 MSTORE8
-        //   CALL: retLen=32 retOff=32 argsLen=3 argsOff=0 value=0 addr=2 gas=0
-        //   PUSH1 32 MLOAD STOP
         let p = |op: crate::opcode::OpCode| op as u8;
         let code = [
             p(Push1), 0x61, p(Push1), 0, p(Mstore8),
@@ -494,16 +212,12 @@ mod tests {
         ];
         let out = run_mem(&code, 1_000_000);
         assert_eq!(out.halt, Halt::Stop);
-        // top of stack = first 32 bytes of sha256("abc")
         let expected = U256::from_big_endian(&tron_crypto::sha256(b"abc"));
         assert_eq!(out.stack_top, Some(expected));
     }
 
     #[test]
     fn return_captures_memory_output() {
-        // MSTORE 0xabcd at 0, RETURN mem[0..32]
-        // PUSH2 not available; PUSH1 0xcd... use a single byte via MSTORE8 for clarity:
-        // MSTORE8 mem[0]=0x2a, RETURN offset 0 len 1 -> output [0x2a]
         let p = |op: crate::opcode::OpCode| op as u8;
         let code = [p(Push1), 0x2a, p(Push1), 0, p(Mstore8), p(Push1), 1, p(Push1), 0, p(Return)];
         let out = run_mem(&code, 100000);
@@ -513,13 +227,11 @@ mod tests {
 
     #[test]
     fn returndatasize_and_copy_after_call() {
-        // CALL sha256("") (empty args) -> 32-byte return; RETURNDATASIZE -> 32.
         let p = |op: crate::opcode::OpCode| op as u8;
         let code = [
-            // CALL: retLen32 retOff64 argsLen0 argsOff0 value0 addr2 gas0
             p(Push1), 32, p(Push1), 64, p(Push1), 0, p(Push1), 0,
             p(Push1), 0, p(Push1), 2, p(Push1), 0, p(Call),
-            p(Pop), // drop success flag
+            p(Pop),
             p(ReturnDataSize), p(Stop),
         ];
         let out = run_mem(&code, 1_000_000);
@@ -528,7 +240,6 @@ mod tests {
 
     #[test]
     fn call_to_non_precompile_pushes_zero() {
-        // CALL addr 0x99 (not a precompile) -> success flag 0
         let p = |op: crate::opcode::OpCode| op as u8;
         let code = [
             p(Push1), 0, p(Push1), 0, p(Push1), 0, p(Push1), 0,
@@ -539,51 +250,43 @@ mod tests {
 
     #[test]
     fn votewitness_prices_size_word_at_high_offset() {
-        // Push witnessOffset, witnessLength, amountOffset, amountLength (bottom->top),
-        // then VOTEWITNESS. Both arrays zero-length; witness offset is high (10000).
-        // CS-JTRON-005: the size-word memory access must be charged, so the run costs
-        // strictly more than the VOTE_WITNESS base and more than a zero-offset run.
         let p = |op: crate::opcode::OpCode| op as u8;
         let high = [
-            p(Push2), 0x27, 0x10, // witnessOffset = 10000
-            p(Push1), 0,          // witnessLength = 0
-            p(Push1), 0,          // amountOffset = 0
-            p(Push1), 0,          // amountLength = 0
+            p(Push2), 0x27, 0x10,
+            p(Push1), 0,
+            p(Push1), 0,
+            p(Push1), 0,
             p(VoteWitness), p(Stop),
         ];
         let low = [
-            p(Push1), 0, // witnessOffset = 0
-            p(Push1), 0, // witnessLength = 0
-            p(Push1), 0, // amountOffset = 0
-            p(Push1), 0, // amountLength = 0
+            p(Push1), 0,
+            p(Push1), 0,
+            p(Push1), 0,
+            p(Push1), 0,
             p(VoteWitness), p(Stop),
         ];
         let out_high = run_mem(&high, 1_000_000);
         let out_low = run_mem(&low, 1_000_000);
         assert_eq!(out_high.halt, Halt::Stop);
         assert_eq!(out_low.halt, Halt::Stop);
-        assert!(out_high.energy_used > crate::energy::VOTE_WITNESS, "high-offset must exceed base");
-        assert!(out_low.energy_used > crate::energy::VOTE_WITNESS, "even offset 0 pays one size word");
-        assert!(out_high.energy_used > out_low.energy_used, "high offset must cost more than offset 0");
-        // The opcode pushed its (unsupported-vote) success flag 0.
+        assert!(out_high.energy_used > crate::energy::VOTE_WITNESS);
+        assert!(out_low.energy_used > crate::energy::VOTE_WITNESS);
+        assert!(out_high.energy_used > out_low.energy_used);
         assert_eq!(out_high.stack_top, Some(U256::zero()));
     }
 
     #[test]
     fn votewitness_out_of_energy_on_base() {
-        // Not enough energy to cover even the VOTE_WITNESS base -> OOG (no push).
         let p = |op: crate::opcode::OpCode| op as u8;
         let code = [
             p(Push1), 0, p(Push1), 0, p(Push1), 0, p(Push1), 0, p(VoteWitness), p(Stop),
         ];
-        // 4 pushes cost 3 each = 12; give 12 + a little, less than VOTE_WITNESS (30000).
         let out = run_mem(&code, 100);
         assert_eq!(out.halt, Halt::OutOfEnergy);
     }
 
     #[test]
     fn stack_overflow_guarded() {
-        // DUP1 forever from a single value would overflow; build 1025 pushes worth
         let mut code = vec![Push1 as u8, 1];
         for _ in 0..STACK_LIMIT + 5 {
             code.push(Dup1 as u8);

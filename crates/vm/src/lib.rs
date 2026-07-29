@@ -9,8 +9,10 @@
 
 pub mod call;
 pub mod energy;
+pub mod engine;
 pub mod frame;
 pub mod interp;
+pub(crate) mod memory;
 pub mod opcode;
 pub mod precompile;
 
