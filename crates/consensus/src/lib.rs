@@ -92,6 +92,8 @@ pub mod validation {
         WitnessMismatch { recovered: String, header: String },
         #[error("parent hash height prefix {got} != number-1 {expected}")]
         BadParentLink { got: i64, expected: i64 },
+        #[error("block producer {producer} is not in the active witness set")]
+        SignerNotActiveWitness { producer: String },
     }
 
     /// Options: served blocks on some gateways (e.g. TronGrid Nile) have the
@@ -162,6 +164,42 @@ pub mod validation {
         }
         Ok(())
     }
+
+    /// Intake gate for blocks arriving from peers.
+    ///
+    /// Mirrors the java-tron fix for CS-JTRON-006/-007 ("Resource Consumption by
+    /// Blocks Not Signed by Witnesses" / "Unpermissioned Censoring of Fork
+    /// Blocks"): a peer block must be **fully self-consistent AND signed by a
+    /// member of the active witness set** before a node spends resources storing,
+    /// applying, forking on, or re-broadcasting it. Calling this first stops an
+    /// unprivileged peer from making us do expensive work (or poisoning the fork
+    /// set) with blocks no scheduled producer ever signed.
+    ///
+    /// `active_witnesses` is the current active-witness address list (each a
+    /// 21-byte `0x41…` address). The signature check is always required here
+    /// regardless of `opts` — an unsigned block can never pass an intake gate.
+    pub fn validate_block_intake(
+        block: &protocol::Block,
+        active_witnesses: &[Vec<u8>],
+    ) -> Result<(), BlockValidationError> {
+        // Full structural + signature validation, signature mandatory.
+        validate_block(
+            block,
+            ValidationOptions { require_witness_signature: true },
+        )?;
+
+        // The recovered producer (== header witness_address, proven above) must be
+        // an active witness. Recovery cannot fail here: validate_block succeeded.
+        let recovered = tron_chain::recover_witness(block)
+            .ok_or(BlockValidationError::BadWitnessSignature(0))?;
+        let producer = recovered.as_bytes();
+        if !active_witnesses.iter().any(|w| w.as_slice() == producer.as_slice()) {
+            return Err(BlockValidationError::SignerNotActiveWitness {
+                producer: hex::encode(producer),
+            });
+        }
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -194,6 +232,76 @@ mod tests {
         assert_eq!(scheduled_witness(&active, 5, 1), Some(&vec![0])); // (5+1)%3=0
         // empty set -> None
         assert_eq!(scheduled_witness(&[], 0, 1), None);
+    }
+
+    #[test]
+    fn intake_gate_admits_active_witness_and_rejects_others() {
+        use crate::producer::produce_block;
+        use crate::validation::{validate_block_intake, BlockValidationError};
+        use tron_crypto::{address_from_public_key, public_key, SecretKey};
+
+        let genesis = tron_proto::protocol::Block {
+            block_header: Some(tron_proto::protocol::BlockHeader {
+                raw_data: Some(tron_proto::protocol::block_header::Raw {
+                    number: 0,
+                    ..Default::default()
+                }),
+                witness_signature: vec![],
+            }),
+            transactions: vec![],
+        };
+
+        let sk = SecretKey::from_slice(&[0x33u8; 32]).unwrap();
+        let producer = address_from_public_key(&public_key(&sk)).as_bytes().to_vec();
+        let block = produce_block(&genesis, &sk, 3000, vec![], 30);
+
+        let other = vec![0x41u8; 21];
+
+        // In the active set -> admitted.
+        let active = vec![other.clone(), producer.clone()];
+        assert!(validate_block_intake(&block, &active).is_ok());
+
+        // Not in the active set -> rejected as a non-witness producer (the audit
+        // CS-JTRON-006/-007 gate) rather than accepted for expensive processing.
+        assert!(matches!(
+            validate_block_intake(&block, &[other.clone()]),
+            Err(BlockValidationError::SignerNotActiveWitness { .. })
+        ));
+        // Empty active set -> rejected.
+        assert!(matches!(
+            validate_block_intake(&block, &[]),
+            Err(BlockValidationError::SignerNotActiveWitness { .. })
+        ));
+    }
+
+    #[test]
+    fn intake_gate_rejects_unsigned_block_even_if_producer_listed() {
+        use crate::producer::produce_block;
+        use crate::validation::{validate_block_intake, BlockValidationError};
+        use tron_crypto::{address_from_public_key, public_key, SecretKey};
+
+        let genesis = tron_proto::protocol::Block {
+            block_header: Some(tron_proto::protocol::BlockHeader {
+                raw_data: Some(tron_proto::protocol::block_header::Raw {
+                    number: 0,
+                    ..Default::default()
+                }),
+                witness_signature: vec![],
+            }),
+            transactions: vec![],
+        };
+        let sk = SecretKey::from_slice(&[0x77u8; 32]).unwrap();
+        let producer = address_from_public_key(&public_key(&sk)).as_bytes().to_vec();
+        // Take a fully valid block, then strip the signature: everything else
+        // (txTrieRoot, parent link, witness_address) is intact, so the ONLY defect
+        // is the missing signature. An unsigned block must never pass the gate,
+        // even though its declared producer is in the active set.
+        let mut block = produce_block(&genesis, &sk, 3000, vec![], 30);
+        block.block_header.as_mut().unwrap().witness_signature = vec![];
+        assert!(matches!(
+            validate_block_intake(&block, &[producer]),
+            Err(BlockValidationError::BadWitnessSignature(_))
+        ));
     }
 
     #[test]
