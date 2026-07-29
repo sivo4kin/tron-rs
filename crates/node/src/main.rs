@@ -15,9 +15,15 @@ async fn main() -> anyhow::Result<()> {
         )
         .init();
 
-    // Optional config path as the first CLI argument.
-    let config_path = std::env::args().nth(1);
-    let config = Config::load(config_path.as_deref())?;
+    // CLI args: an optional config path (first non-flag arg) and a `--witness` flag
+    // that forces block production on (overriding the config value).
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    let witness_flag = args.iter().any(|a| a == "--witness");
+    let config_path = args.iter().find(|a| !a.starts_with("--")).cloned();
+    let mut config = Config::load(config_path.as_deref())?;
+    if witness_flag {
+        config.witness = true;
+    }
 
     let shutdown = CancellationToken::new();
 

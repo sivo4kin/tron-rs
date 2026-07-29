@@ -5,6 +5,7 @@
 //! real p2p, consensus, and rpc subsystems.
 
 pub mod net;
+pub mod production;
 pub mod sync;
 
 use serde::Deserialize;
@@ -24,6 +25,12 @@ pub struct Config {
     /// Seed peers to bootstrap sync from, as `"host:port"` strings.
     #[serde(default)]
     pub seed_nodes: Vec<String>,
+    /// Produce blocks when this node is the scheduled witness (needs `witness_key`).
+    #[serde(default)]
+    pub witness: bool,
+    /// Hex-encoded 32-byte witness (SR) private key used to sign produced blocks.
+    #[serde(default)]
+    pub witness_key: Option<String>,
 }
 
 impl Default for Config {
@@ -35,6 +42,8 @@ impl Default for Config {
             http_port: tron_rpc::DEFAULT_HTTP_PORT,
             grpc_port: tron_rpc::DEFAULT_GRPC_PORT,
             seed_nodes: Vec::new(),
+            witness: false,
+            witness_key: None,
         }
     }
 }
@@ -56,6 +65,13 @@ impl Config {
 }
 
 impl Config {
+    /// Parse the configured witness private key (hex, 32 bytes), if any.
+    pub fn witness_secret_key(&self) -> Option<tron_crypto::SecretKey> {
+        let hex = self.witness_key.as_ref()?;
+        let bytes = hex::decode(hex.trim_start_matches("0x")).ok()?;
+        tron_crypto::SecretKey::from_slice(&bytes).ok()
+    }
+
     /// Load from a TOML file, falling back to defaults if the path is `None`.
     pub fn load(path: Option<&str>) -> anyhow::Result<Self> {
         match path {
@@ -206,6 +222,10 @@ impl Node {
         // Channel service: bind the TCP p2p port, keep persistent peer connections,
         // gossip block/tx inventory, and apply inbound blocks through the intake gate.
         // Dials the currently-known peers; a bind failure is non-fatal.
+        //
+        // Its advertise handle is captured so the block-production service can gossip
+        // locally produced blocks (T07).
+        let channel_advertise;
         {
             let chan_addr: std::net::SocketAddr = ([0, 0, 0, 0], self.config.p2p_port).into();
             let handler = std::sync::Arc::new(crate::net::NodeChannelHandler::new(
@@ -213,8 +233,9 @@ impl Node {
                 mempool.clone(),
                 true,
             ));
-            let (service, _advertise) =
+            let (service, advertise) =
                 tron_p2p::service::ChannelService::new(handler, Default::default());
+            channel_advertise = advertise;
             let dial: Vec<std::net::SocketAddr> = peers
                 .lock()
                 .map(|pm| {
@@ -237,12 +258,44 @@ impl Node {
             }));
         }
 
-        // Placeholder service for the remaining subsystem (consensus/producer).
+        // Block-production service (T07): when configured as a witness, on each block
+        // interval produce a block for our scheduled slot from the mempool, apply it
+        // locally (advancing the head), and gossip it via the channel service.
         {
             let token = shutdown.clone();
+            let prod_state = state.clone();
+            let prod_mempool = mempool.clone();
+            let advertise = channel_advertise.clone();
+            let witness_key = self.config.witness_secret_key().filter(|_| self.config.witness);
             handles.push(tokio::spawn(async move {
-                tracing::info!(service = "consensus", "service started");
-                token.cancelled().await;
+                tracing::info!(service = "consensus", producing = witness_key.is_some(), "service started");
+                match witness_key {
+                    Some(key) => {
+                        let mut tick = tokio::time::interval(std::time::Duration::from_millis(
+                            tron_consensus::BLOCK_INTERVAL_MS,
+                        ));
+                        loop {
+                            tokio::select! {
+                                _ = token.cancelled() => break,
+                                _ = tick.tick() => {
+                                    let now = crate::production::now_ms();
+                                    if let Some(block) =
+                                        crate::production::try_produce(&prod_state, &prod_mempool, &key, now)
+                                    {
+                                        if let Some(n) = crate::production::apply_produced(
+                                            &prod_state, &prod_mempool, &block,
+                                        ) {
+                                            tracing::info!(number = n, "produced block");
+                                            advertise.advertise_block(n);
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    // Not a witness: nothing to produce.
+                    None => token.cancelled().await,
+                }
                 tracing::info!(service = "consensus", "service stopped");
             }));
         }

@@ -31,6 +31,8 @@ tracing-subscriber.workspace = true
 serde.workspace = true
 toml.workspace = true
 anyhow.workspace = true
+tron-crypto.workspace = true
+hex.workspace = true
 
 [features]
 default = []
@@ -38,7 +40,6 @@ default = []
 rocksdb = ["tron-storage/rocksdb"]
 
 [dev-dependencies]
-tron-crypto.workspace = true
 tokio = { workspace = true, features = ["test-util", "macros", "rt-multi-thread", "net"] }
 reqwest.workspace = true
 serde_json.workspace = true
