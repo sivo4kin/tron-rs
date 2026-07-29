@@ -26,3 +26,38 @@ pub fn fixture_names() -> anyhow::Result<Vec<String>> {
     names.sort();
     Ok(names)
 }
+
+/// Subdirectory holding captured contract-call cases (`capture_contract_case`).
+pub const CONTRACT_FIXTURE_SUBDIR: &str = "fixtures/contracts";
+
+/// A captured real `TriggerSmartContract` call and its ground-truth receipt/code.
+pub struct ContractCase {
+    pub label: String,
+    /// The real transaction (its `Any`-packed `TriggerSmartContract`).
+    pub tx: protocol::Transaction,
+    /// `GetTransactionInfoById` receipt: `receipt.energy_usage_total`, `result`, …
+    pub info: protocol::TransactionInfo,
+    /// The contract's runtime bytecode (`GetContract`).
+    pub code: Vec<u8>,
+}
+
+/// Load every committed contract-call case (sorted). Returns an empty vec if none
+/// are committed yet (the parity test then relies on its controlled case only).
+pub fn contract_cases() -> anyhow::Result<Vec<ContractCase>> {
+    let dir = format!("{}/{}", env!("CARGO_MANIFEST_DIR"), CONTRACT_FIXTURE_SUBDIR);
+    let mut cases = Vec::new();
+    let Ok(entries) = std::fs::read_dir(&dir) else {
+        return Ok(cases);
+    };
+    for entry in entries.filter_map(|e| e.ok()) {
+        let name = entry.file_name().into_string().unwrap_or_default();
+        let Some(label) = name.strip_suffix(".info.pb") else { continue };
+        let base = format!("{dir}/{label}");
+        let info = protocol::TransactionInfo::decode(std::fs::read(format!("{base}.info.pb"))?.as_slice())?;
+        let tx = protocol::Transaction::decode(std::fs::read(format!("{base}.tx.pb"))?.as_slice())?;
+        let code = std::fs::read(format!("{base}.code.bin"))?;
+        cases.push(ContractCase { label: label.to_string(), tx, info, code });
+    }
+    cases.sort_by(|a, b| a.label.cmp(&b.label));
+    Ok(cases)
+}
