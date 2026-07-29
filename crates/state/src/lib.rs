@@ -278,8 +278,8 @@ impl<S: KvStore> WorldState<S> {
     /// Read the elected active-witness address list (21-byte addresses). Empty
     /// when unset (pre-genesis). Stored as one record (java-tron
     /// `getActiveWitnesses`); genesis seeds it and the maintenance/election cycle
-    /// should refresh it via [`Self::put_active_witnesses`].
-    // TODO(maintenance): wire the DPoS maintenance step to re-write this each round.
+    /// refreshes it each round via [`Self::put_active_witnesses`]
+    /// (`tron_actuators::maintenance::run_maintenance`).
     pub fn get_active_witnesses(&self) -> Result<Vec<Vec<u8>>, StateError> {
         let bytes = self
             .db

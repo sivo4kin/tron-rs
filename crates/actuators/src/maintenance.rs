@@ -18,7 +18,7 @@ use std::collections::HashMap;
 use tron_proto::protocol;
 use tron_state::WorldState;
 use tron_storage::KvStore;
-use tron_types::Address;
+use tron_types::{Address, ADDRESS_LEN};
 
 const CF_WITNESS: &str = tron_state::cf::WITNESS;
 
@@ -97,8 +97,21 @@ pub fn run_maintenance<S: KvStore>(
         }
     }
 
-    // 3. Elect the active set.
-    active_set(scored)
+    // 3. Elect the active set and persist it, so the live sync intake gate
+    //    (`apply_synced_blocks_gated` reading `get_active_witnesses`) tracks the
+    //    current election rather than the genesis set. Mirrors java-tron writing
+    //    the recomputed active list at each maintenance boundary.
+    let elected = active_set(scored);
+    let addrs: Vec<Address> = elected
+        .iter()
+        .filter_map(|b| {
+            <[u8; ADDRESS_LEN]>::try_from(b.as_slice())
+                .ok()
+                .and_then(|a| Address::from_bytes(a).ok())
+        })
+        .collect();
+    let _ = state.put_active_witnesses(&addrs);
+    elected
 }
 
 #[cfg(test)]
@@ -196,6 +209,25 @@ mod tests {
         )
         .unwrap();
         assert_eq!(w3_stored.vote_count, 500);
+    }
+
+    #[test]
+    fn run_maintenance_persists_active_set_for_the_intake_gate() {
+        let mut ws = WorldState::new(MemoryStore::new());
+        let (w1, w2, w3) = (addr(10), addr(11), addr(12));
+        put_witness(&mut ws, &w1, 0);
+        put_witness(&mut ws, &w2, 100);
+        put_witness(&mut ws, &w3, 0);
+        let voter = addr(1);
+        ws.put_account(&voter, &voter_with(&[(&w3, 500), (&w1, 50)])).unwrap();
+
+        let active = run_maintenance(&mut ws, &[w1, w2, w3], &[voter]);
+        // The elected set is now stored exactly where the sync intake gate reads it
+        // (get_active_witnesses) — closing the H05 genesis-only gap.
+        let stored = ws.get_active_witnesses().unwrap();
+        assert_eq!(stored, active, "maintenance must persist the elected set");
+        assert_eq!(stored[0], w3.as_bytes().to_vec()); // top by votes
+        assert_eq!(stored.len(), 3);
     }
 
     #[test]
