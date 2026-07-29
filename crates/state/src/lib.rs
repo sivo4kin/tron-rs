@@ -135,6 +135,32 @@ impl<S: KvStore> WorldState<S> {
         Ok(self.db.get(cf::CONTRACT_CODE, addr.as_bytes())?.unwrap_or_default())
     }
 
+    // -- contract records -------------------------------------------------
+
+    /// Store the full `SmartContract` record (java-tron `ContractStore`), keyed by
+    /// the 21-byte contract address. Unlike code, this carries the ABI, resource
+    /// settings (`consume_user_resource_percent`, `origin_energy_limit`), etc.
+    pub fn put_contract(
+        &self,
+        addr: &Address,
+        contract: &protocol::SmartContract,
+    ) -> Result<(), StateError> {
+        self.db
+            .put(cf::CONTRACT, addr.as_bytes(), &contract.encode_to_vec())
+            .map_err(Into::into)
+    }
+
+    /// Fetch a contract's `SmartContract` record (`Ok(None)` when absent).
+    pub fn get_contract(
+        &self,
+        addr: &Address,
+    ) -> Result<Option<protocol::SmartContract>, StateError> {
+        match self.db.get(cf::CONTRACT, addr.as_bytes())? {
+            Some(bytes) => Ok(Some(protocol::SmartContract::decode(bytes.as_slice())?)),
+            None => Ok(None),
+        }
+    }
+
     // -- dynamic properties ----------------------------------------------
 
     pub fn get_prop_i64(&self, key: &str) -> Result<i64, StateError> {
@@ -203,6 +229,24 @@ mod tests {
         assert_eq!(created.r#type, protocol::AccountType::Normal as i32);
         assert_eq!(created.create_time, 1_700_000_000_000);
         assert!(ws.account_exists(&a).unwrap());
+    }
+
+    #[test]
+    fn contract_record_roundtrip() {
+        let ws = WorldState::new(MemoryStore::new());
+        let a = addr(0xab);
+        assert_eq!(ws.get_contract(&a).unwrap(), None);
+
+        let contract = protocol::SmartContract {
+            contract_address: a.as_bytes().to_vec(),
+            origin_energy_limit: 5_000_000,
+            consume_user_resource_percent: 30,
+            ..Default::default()
+        };
+        ws.put_contract(&a, &contract).unwrap();
+        let loaded = ws.get_contract(&a).unwrap().unwrap();
+        assert_eq!(loaded, contract);
+        assert_eq!(loaded.origin_energy_limit, 5_000_000);
     }
 
     #[test]

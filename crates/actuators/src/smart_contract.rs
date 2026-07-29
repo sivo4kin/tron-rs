@@ -120,6 +120,12 @@ impl<'a> CreateSmartContractActuator<'a> {
             .ok_or_else(|| ActuatorError::Execute("No contract body".into()))?;
         let addr = parse_address(&sc.contract_address, "contractAddress")
             .or_else(|_| parse_address(&self.contract.owner_address, "ownerAddress"))?;
+        // Persist the full SmartContract record (java-tron ContractStore), with its
+        // contract_address set to the derived address, so contract-metadata actuators
+        // (ClearABI/UpdateSetting/UpdateEnergyLimit) can read/modify it later.
+        let mut record = sc.clone();
+        record.contract_address = addr.as_bytes().to_vec();
+        state.put_contract(&addr, &record).map_err(ActuatorError::from)?;
         state.put_code(&addr, &sc.bytecode).map_err(ActuatorError::from)?;
         Ok(ExecutionResult { fee: 0 })
     }
@@ -198,6 +204,31 @@ mod tests {
         act.validate(&ws).unwrap();
         act.execute(&mut ws).unwrap();
         assert_eq!(ws.get_code(&target).unwrap(), vec![0x00]);
+    }
+
+    #[test]
+    fn create_persists_contract_record() {
+        let mut ws = WorldState::new(MemoryStore::new());
+        let target = addr(0xab);
+        let create = CreateSmartContract {
+            owner_address: addr(1).as_bytes().to_vec(),
+            new_contract: Some(protocol::SmartContract {
+                contract_address: target.as_bytes().to_vec(),
+                bytecode: vec![0x60, 0x00],
+                origin_energy_limit: 7_000_000,
+                consume_user_resource_percent: 40,
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let act = CreateSmartContractActuator::new(&create);
+        act.validate(&ws).unwrap();
+        act.execute(&mut ws).unwrap();
+
+        let record = ws.get_contract(&target).unwrap().expect("record persisted");
+        assert_eq!(record.origin_energy_limit, 7_000_000);
+        assert_eq!(record.consume_user_resource_percent, 40);
+        assert_eq!(record.contract_address, target.as_bytes().to_vec());
     }
 
     #[test]
