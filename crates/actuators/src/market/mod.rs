@@ -8,6 +8,7 @@
 //! `Account.balance`); a numeric id is TRC10 (balance in `Account.asset_v2`,
 //! keyed by the id string — same convention as `exchange`/`asset_transfer`).
 
+pub mod cancel;
 pub mod order_book;
 pub mod price;
 pub mod sell;
@@ -22,6 +23,8 @@ pub const TRX_SYMBOL_BYTES: &[u8] = b"_";
 pub const MARKET_ORDER_NUM: &str = "MARKET_ORDER_NUM";
 /// Dynamic-property key: TRX fee to place a market sell order.
 pub const MARKET_SELL_FEE: &str = "MARKET_SELL_FEE";
+/// Dynamic-property key: TRX fee to cancel a market order.
+pub const MARKET_CANCEL_FEE: &str = "MARKET_CANCEL_FEE";
 /// Dynamic-property key: max sell/buy quantity per order.
 pub const MARKET_QUANTITY_LIMIT: &str = "MARKET_QUANTITY_LIMIT";
 /// java-tron genesis default `getMarketQuantityLimit()`.
