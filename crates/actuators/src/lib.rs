@@ -16,6 +16,7 @@ pub mod delegate;
 pub mod exchange;
 pub mod freeze_v1;
 pub mod maintenance;
+pub mod market;
 pub mod asset_transfer;
 pub mod participate_asset_issue;
 pub mod executor;

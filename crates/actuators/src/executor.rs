@@ -253,6 +253,12 @@ pub fn apply_transaction<S: KvStore>(
             actuator.validate(state)?;
             actuator.execute(state)
         }
+        ContractType::MarketSellAssetContract => {
+            let c: protocol::MarketSellAssetContract = unpack(contract)?;
+            let actuator = crate::market::sell::MarketSellAssetActuator::new(&c);
+            actuator.validate(state)?;
+            actuator.execute(state)
+        }
         other => Err(ActuatorError::Validate(format!(
             "unsupported contract type: {other:?}"
         ))),

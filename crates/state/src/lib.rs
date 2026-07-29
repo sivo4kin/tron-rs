@@ -36,6 +36,12 @@ pub mod cf {
     pub const TRANSACTION: &str = "transaction";
     pub const BLOCK_INDEX: &str = "block_index";
     pub const BROKERAGE: &str = "brokerage";
+    /// DEX order records, keyed by order id (java-tron `MarketOrderStore`).
+    pub const MARKET_ORDER: &str = "market_order";
+    /// DEX per-(pair,price) FIFO order-id lists (`MarketPairPriceToOrderStore`).
+    pub const MARKET_PAIR_PRICE: &str = "market_pair_price";
+    /// DEX per-pair sorted price index (`MarketPairToPriceStore`).
+    pub const MARKET_PAIR: &str = "market_pair";
     pub const DYNAMIC_PROPERTIES: &str = "properties";
 }
 
