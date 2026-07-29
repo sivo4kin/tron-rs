@@ -108,10 +108,14 @@ pub fn base_cost(op: OpCode) -> u64 {
         SelfDestruct => SUICIDE, // dynamic surcharge computed by suicide_cost
         VoteWitness => ZERO_TIER, // full cost computed by vote_witness_cost
         // Tron-specific: costs are context-dependent; base tier per java-tron.
-        IsContract | IsWitness | TokenBalance | CallTokenValue | CallTokenId => BASE_TIER,
+        IsContract | TokenBalance | CallTokenValue | CallTokenId => BASE_TIER,
         Call => 40,       // CALL_ENERGY base (java-tron CALL_ENERGY); dynamic parts added in-op
         CallToken => 40, // CALL_ENERGY tier
-        Stake | Unstake | WithdrawReward => BASE_TIER,
+        // Stake/freeze/delegate family (java-tron Op.java 0xd5..=0xdf). Naming/decode
+        // only for now (H06); execution semantics land in follow-ups. Static base tier.
+        Freeze | Unfreeze | FreezeExpireTime | WithdrawReward | FreezeBalanceV2
+        | UnfreezeBalanceV2 | CancelAllUnfreezeV2 | WithdrawExpireUnfreeze
+        | DelegateResource | UnDelegateResource => BASE_TIER,
     }
 }
 

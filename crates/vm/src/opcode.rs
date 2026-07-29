@@ -42,17 +42,23 @@ pub enum OpCode {
     Push2 = 0x61,
     Dup1 = 0x80,
     Swap1 = 0x90,
-    // Tron-specific (0xd0..=0xdb)
+    // Tron-specific (0xd0..=0xdf) — authoritative java-tron `Op.java:242-257`.
     CallToken = 0xd0,
     TokenBalance = 0xd1,
     CallTokenValue = 0xd2,
     CallTokenId = 0xd3,
     IsContract = 0xd4,
-    Stake = 0xd5,
-    Unstake = 0xd6,
+    Freeze = 0xd5,
+    Unfreeze = 0xd6,
+    FreezeExpireTime = 0xd7,
     VoteWitness = 0xd8,
     WithdrawReward = 0xd9,
-    IsWitness = 0xda,
+    FreezeBalanceV2 = 0xda,
+    UnfreezeBalanceV2 = 0xdb,
+    CancelAllUnfreezeV2 = 0xdc,
+    WithdrawExpireUnfreeze = 0xdd,
+    DelegateResource = 0xde,
+    UnDelegateResource = 0xdf,
     Call = 0xf1,
     Return = 0xf3,
     Revert = 0xfd,
@@ -103,11 +109,17 @@ impl OpCode {
             0xd2 => CallTokenValue,
             0xd3 => CallTokenId,
             0xd4 => IsContract,
-            0xd5 => Stake,
-            0xd6 => Unstake,
+            0xd5 => Freeze,
+            0xd6 => Unfreeze,
+            0xd7 => FreezeExpireTime,
             0xd8 => VoteWitness,
             0xd9 => WithdrawReward,
-            0xda => IsWitness,
+            0xda => FreezeBalanceV2,
+            0xdb => UnfreezeBalanceV2,
+            0xdc => CancelAllUnfreezeV2,
+            0xdd => WithdrawExpireUnfreeze,
+            0xde => DelegateResource,
+            0xdf => UnDelegateResource,
             0xf1 => Call,
             0xf3 => Return,
             0xfd => Revert,
@@ -117,9 +129,9 @@ impl OpCode {
         })
     }
 
-    /// Whether this is a Tron-specific opcode (`0xd0..=0xdb`).
+    /// Whether this is a Tron-specific opcode (`0xd0..=0xdf`, java-tron `Op.java`).
     pub fn is_tron_specific(self) -> bool {
-        (0xd0..=0xdb).contains(&(self as u8))
+        (0xd0..=0xdf).contains(&(self as u8))
     }
 }
 
@@ -128,15 +140,34 @@ mod tests {
     use super::*;
 
     #[test]
-    fn tron_opcodes_match_java_tron_values() {
-        assert_eq!(OpCode::CallToken as u8, 0xd0);
-        assert_eq!(OpCode::TokenBalance as u8, 0xd1);
-        assert_eq!(OpCode::IsContract as u8, 0xd4);
-        assert_eq!(OpCode::VoteWitness as u8, 0xd8); // java-tron Op.VOTEWITNESS
-        assert_eq!(OpCode::WithdrawReward as u8, 0xd9);
-        assert_eq!(OpCode::IsWitness as u8, 0xda);
-        assert!(OpCode::CallToken.is_tron_specific());
-        assert!(OpCode::VoteWitness.is_tron_specific());
+    fn tron_opcode_table_matches_java_op_java() {
+        // Authoritative java-tron Op.java:242-257 (0xd0..=0xdf). Every entry must
+        // have the right discriminant, decode from its byte, and be tron-specific.
+        let table: [(u8, OpCode); 16] = [
+            (0xd0, OpCode::CallToken),
+            (0xd1, OpCode::TokenBalance),
+            (0xd2, OpCode::CallTokenValue),
+            (0xd3, OpCode::CallTokenId),
+            (0xd4, OpCode::IsContract),
+            (0xd5, OpCode::Freeze),
+            (0xd6, OpCode::Unfreeze),
+            (0xd7, OpCode::FreezeExpireTime),
+            (0xd8, OpCode::VoteWitness),
+            (0xd9, OpCode::WithdrawReward),
+            (0xda, OpCode::FreezeBalanceV2),
+            (0xdb, OpCode::UnfreezeBalanceV2),
+            (0xdc, OpCode::CancelAllUnfreezeV2),
+            (0xdd, OpCode::WithdrawExpireUnfreeze),
+            (0xde, OpCode::DelegateResource),
+            (0xdf, OpCode::UnDelegateResource),
+        ];
+        for (byte, op) in table {
+            assert_eq!(op as u8, byte, "{op:?} must have discriminant {byte:#x}");
+            assert_eq!(OpCode::from_u8(byte), Some(op), "0x{byte:x} must decode to {op:?}");
+            assert!(op.is_tron_specific(), "{op:?} must be tron-specific");
+        }
+        // The phantom fix: 0xda is FREEZEBALANCEV2, not the old (nonexistent) opcode.
+        assert_eq!(OpCode::from_u8(0xda), Some(OpCode::FreezeBalanceV2));
         assert!(!OpCode::Add.is_tron_specific());
     }
 
