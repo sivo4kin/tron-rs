@@ -5,6 +5,10 @@
 //!   (java-tron's own schema, so values stay byte-compatible with its stores).
 //! - **dynamic properties** — named global tunables (`DynamicPropertiesStore`),
 //!   little chain parameters the committee can change plus running counters.
+//! - **TRC10 asset issues** — token definitions keyed by numeric token id, with a
+//!   `TOKEN_ID_NUM` allocator; only the V2 (post-`allowSameTokenName`) path is
+//!   modelled (the deprecated V1 name-keyed store is omitted). Account token
+//!   balances live in `Account.assetV2`.
 //!
 //! Encodings are guarded by the differential harness (SPEC section 7).
 
@@ -51,6 +55,9 @@ pub mod props {
     pub const TOTAL_ENERGY_WEIGHT: &str = "TOTAL_ENERGY_WEIGHT";
     /// Total staked Tron-Power weight (TRX) across all accounts.
     pub const TOTAL_TRON_POWER_WEIGHT: &str = "TOTAL_TRON_POWER_WEIGHT";
+    /// TRC10 token-id counter (java-tron `TOKEN_ID_NUM`). Base `1_000_000`; each
+    /// asset issue increments it and the new token takes `counter + 1`.
+    pub const TOKEN_ID_NUM: &str = "TOKEN_ID_NUM";
 }
 
 #[derive(Debug, Error)]
@@ -161,6 +168,57 @@ impl<S: KvStore> WorldState<S> {
         }
     }
 
+    // -- TRC10 asset issues (V2 path) -------------------------------------
+    //
+    // Only the V2 (post-`allowSameTokenName`) store is modelled: the canonical
+    // key is the numeric token id, and account balances live in
+    // `Account.assetV2`. The deprecated V1 name-keyed `AssetIssueStore` is not
+    // modelled (see the module docs).
+
+    /// Store a TRC10 token definition (java-tron `AssetIssueV2Store`), keyed by
+    /// the numeric token id rendered as ascii bytes (e.g. `1000001`).
+    pub fn put_asset_issue(
+        &self,
+        id: i64,
+        asset: &protocol::AssetIssueContract,
+    ) -> Result<(), StateError> {
+        self.db
+            .put(cf::ASSET, id.to_string().as_bytes(), &asset.encode_to_vec())
+            .map_err(Into::into)
+    }
+
+    /// Fetch a TRC10 token definition by id (`Ok(None)` when absent).
+    pub fn get_asset_issue(
+        &self,
+        id: i64,
+    ) -> Result<Option<protocol::AssetIssueContract>, StateError> {
+        match self.db.get(cf::ASSET, id.to_string().as_bytes())? {
+            Some(bytes) => Ok(Some(protocol::AssetIssueContract::decode(bytes.as_slice())?)),
+            None => Ok(None),
+        }
+    }
+
+    /// Current token-id counter (java-tron `getTokenIdNum`). Defaults to the
+    /// [`TOKEN_ID_BASE`] (`1_000_000`) when unset.
+    pub fn get_token_id_num(&self) -> Result<i64, StateError> {
+        let v = self.get_prop_i64(props::TOKEN_ID_NUM)?;
+        Ok(if v == 0 { TOKEN_ID_BASE } else { v })
+    }
+
+    /// Persist the token-id counter (java-tron `saveTokenIdNum`).
+    pub fn save_token_id_num(&self, num: i64) -> Result<(), StateError> {
+        self.put_prop_i64(props::TOKEN_ID_NUM, num)
+    }
+
+    /// Allocate the next token id: increment the counter, persist it, and return
+    /// the new id (java-tron AssetIssue flow: `tokenIdNum++; saveTokenIdNum(...)`).
+    /// The first allocation returns `TOKEN_ID_BASE + 1` = `1_000_001`.
+    pub fn allocate_token_id(&self) -> Result<i64, StateError> {
+        let next = self.get_token_id_num()? + 1;
+        self.save_token_id_num(next)?;
+        Ok(next)
+    }
+
     // -- dynamic properties ----------------------------------------------
 
     pub fn get_prop_i64(&self, key: &str) -> Result<i64, StateError> {
@@ -191,6 +249,21 @@ impl<S: KvStore> WorldState<S> {
         let total = self.get_prop_i64(props::BURN_TRX_AMOUNT)?;
         self.put_prop_i64(props::BURN_TRX_AMOUNT, total.saturating_add(amount))
     }
+}
+
+/// Genesis base of the TRC10 token-id counter (java-tron `getTokenIdNum`
+/// default). The next allocated token id is `TOKEN_ID_BASE + 1`.
+pub const TOKEN_ID_BASE: i64 = 1_000_000;
+
+/// Read an account's TRC10 balance for token `id` (0 when unheld). Keys the
+/// `Account.assetV2` map by the ascii token id (V2 path).
+pub fn asset_v2_balance(account: &protocol::Account, id: i64) -> i64 {
+    account.asset_v2.get(&id.to_string()).copied().unwrap_or(0)
+}
+
+/// Set an account's TRC10 balance for token `id` in its `Account.assetV2` map.
+pub fn set_asset_v2_balance(account: &mut protocol::Account, id: i64, amount: i64) {
+    account.asset_v2.insert(id.to_string(), amount);
 }
 
 #[cfg(test)]
@@ -266,5 +339,64 @@ mod tests {
         ws.burn_trx(100).unwrap();
         ws.burn_trx(50).unwrap();
         assert_eq!(ws.get_prop_i64(props::BURN_TRX_AMOUNT).unwrap(), 150);
+    }
+
+    #[test]
+    fn asset_issue_roundtrip() {
+        let ws = WorldState::new(MemoryStore::new());
+        assert_eq!(ws.get_asset_issue(1_000_001).unwrap(), None);
+
+        let asset = protocol::AssetIssueContract {
+            id: "1000001".into(),
+            owner_address: addr(7).as_bytes().to_vec(),
+            name: b"MyToken".to_vec(),
+            abbr: b"MTK".to_vec(),
+            total_supply: 1_000_000_000,
+            trx_num: 1,
+            num: 100,
+            precision: 6,
+            ..Default::default()
+        };
+        ws.put_asset_issue(1_000_001, &asset).unwrap();
+        let loaded = ws.get_asset_issue(1_000_001).unwrap().unwrap();
+        assert_eq!(loaded, asset);
+        assert_eq!(loaded.total_supply, 1_000_000_000);
+        // A different id is independent.
+        assert_eq!(ws.get_asset_issue(1_000_002).unwrap(), None);
+    }
+
+    #[test]
+    fn token_id_allocator_increments_and_persists() {
+        let ws = WorldState::new(MemoryStore::new());
+        // Unset counter defaults to the base.
+        assert_eq!(ws.get_token_id_num().unwrap(), TOKEN_ID_BASE);
+        assert_eq!(TOKEN_ID_BASE, 1_000_000);
+
+        // Each allocation increments by one and persists.
+        assert_eq!(ws.allocate_token_id().unwrap(), 1_000_001);
+        assert_eq!(ws.get_token_id_num().unwrap(), 1_000_001);
+        assert_eq!(ws.allocate_token_id().unwrap(), 1_000_002);
+        assert_eq!(ws.get_token_id_num().unwrap(), 1_000_002);
+
+        // Persistence is observable through a fresh WorldState over the same db.
+        let raw = ws.get_prop_i64(props::TOKEN_ID_NUM).unwrap();
+        assert_eq!(raw, 1_000_002);
+    }
+
+    #[test]
+    fn asset_v2_balance_helpers() {
+        let mut account = protocol::Account {
+            address: addr(1).as_bytes().to_vec(),
+            ..Default::default()
+        };
+        // Unheld token reads 0.
+        assert_eq!(asset_v2_balance(&account, 1_000_001), 0);
+        set_asset_v2_balance(&mut account, 1_000_001, 500);
+        assert_eq!(asset_v2_balance(&account, 1_000_001), 500);
+        // Map is keyed by the ascii token id.
+        assert_eq!(account.asset_v2.get("1000001").copied(), Some(500));
+        // Overwrite updates in place.
+        set_asset_v2_balance(&mut account, 1_000_001, 900);
+        assert_eq!(asset_v2_balance(&account, 1_000_001), 900);
     }
 }
