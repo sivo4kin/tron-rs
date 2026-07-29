@@ -4,25 +4,15 @@
 //! Column families are created on open from a fixed list; opening an existing DB
 //! discovers and reuses its families.
 
-use crate::{KvStore, StorageError};
+use crate::{KvStore, StorageError, ALL_CFS};
 use rocksdb::{ColumnFamilyDescriptor, Options, DB};
 use std::path::Path;
 
-/// Column families created on open. Mirrors `tron_state::cf` plus room to grow —
-/// RocksDB requires families to exist before use.
-pub const DEFAULT_CFS: &[&str] = &[
-    "account",
-    "contract",
-    "contract_code",
-    "contract_storage",
-    "witness",
-    "votes",
-    "asset",
-    "proposal",
-    "properties",
-    "block",
-    "transaction",
-];
+/// Column families created on open — the canonical [`ALL_CFS`] set. RocksDB
+/// requires families to exist before use; anything missing here would fail with
+/// [`StorageError::UnknownCf`] on the persistent backend (while `MemoryStore`
+/// silently auto-creates it, hiding the gap in tests).
+pub const DEFAULT_CFS: &[&str] = ALL_CFS;
 
 pub struct RocksStore {
     db: DB,
@@ -118,5 +108,22 @@ mod tests {
         db.put("contract", b"k", b"c").unwrap();
         assert_eq!(db.get("account", b"k").unwrap(), Some(b"a".to_vec()));
         assert_eq!(db.get("contract", b"k").unwrap(), Some(b"c".to_vec()));
+    }
+
+    /// Every canonical column family must be openable on RocksDB — write to each
+    /// and read it back. This is the regression guard for the MemoryStore-only
+    /// bug: a cf used by the code but absent from `ALL_CFS` fails here.
+    #[test]
+    fn every_declared_cf_is_openable() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = RocksStore::open(dir.path()).unwrap();
+        for (i, cf) in ALL_CFS.iter().enumerate() {
+            let val = [i as u8; 4];
+            db.put(cf, b"k", &val).unwrap();
+            assert_eq!(db.get(cf, b"k").unwrap(), Some(val.to_vec()), "cf {cf} failed round-trip");
+            assert!(db.exists(cf, b"k").unwrap());
+            db.delete(cf, b"k").unwrap();
+            assert_eq!(db.get(cf, b"k").unwrap(), None);
+        }
     }
 }

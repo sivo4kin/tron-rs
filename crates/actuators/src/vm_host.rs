@@ -11,7 +11,7 @@ use tron_storage::KvStore;
 use tron_types::Address;
 use tron_vm::interp::Host;
 
-const CF_CONTRACT_STORAGE: &str = "contract_storage";
+const CF_CONTRACT_STORAGE: &str = tron_state::cf::CONTRACT_STORAGE;
 
 /// A [`Host`] backed by a contract's storage in the world state.
 pub struct StateHost<'a, S: KvStore> {

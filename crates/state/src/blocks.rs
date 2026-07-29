@@ -5,12 +5,12 @@
 //! `protocol.Block`), and the latest block number is a dynamic property. Enough
 //! to serve `getnowblock` / `getblockbynum` and to support linear replay.
 
-use crate::{props, StateError, WorldState};
+use crate::{cf, props, StateError, WorldState};
 use prost::Message;
 use tron_proto::protocol;
 use tron_storage::KvStore;
 
-const CF_BLOCK: &str = "block";
+const CF_BLOCK: &str = cf::BLOCK;
 
 /// Dynamic-property key holding the current head block number.
 pub const LATEST_BLOCK_NUMBER: &str = "LATEST_BLOCK_HEADER_NUMBER";
@@ -27,7 +27,7 @@ impl<S: KvStore> WorldState<S> {
         self.db.put(CF_BLOCK, &number.to_be_bytes(), &block.encode_to_vec())?;
         // Index block id -> number for id lookups.
         if let Some(id) = tron_chain::block_id_of(block) {
-            self.db.put("block_index", &id.0, &number.to_be_bytes())?;
+            self.db.put(cf::BLOCK_INDEX, &id.0, &number.to_be_bytes())?;
         }
         if number >= self.get_prop_i64(LATEST_BLOCK_NUMBER)? {
             self.put_prop_i64(LATEST_BLOCK_NUMBER, number)?;
@@ -47,12 +47,12 @@ impl<S: KvStore> WorldState<S> {
 
     /// Persist a transaction by its 32-byte id (java-tron `TransactionStore`).
     pub fn put_transaction(&self, txid: &[u8], tx: &protocol::Transaction) -> Result<(), StateError> {
-        self.db.put("transaction", txid, &tx.encode_to_vec())?;
+        self.db.put(cf::TRANSACTION, txid, &tx.encode_to_vec())?;
         Ok(())
     }
 
     pub fn get_transaction(&self, txid: &[u8]) -> Result<Option<protocol::Transaction>, StateError> {
-        match self.db.get("transaction", txid)? {
+        match self.db.get(cf::TRANSACTION, txid)? {
             Some(bytes) => Ok(Some(protocol::Transaction::decode(bytes.as_slice())?)),
             None => Ok(None),
         }
@@ -69,7 +69,7 @@ impl<S: KvStore> WorldState<S> {
 
     /// Fetch a block by its 32-byte block id (via the id->number index).
     pub fn get_block_by_id(&self, id: &[u8]) -> Result<Option<protocol::Block>, StateError> {
-        match self.db.get("block_index", id)? {
+        match self.db.get(cf::BLOCK_INDEX, id)? {
             Some(bytes) if bytes.len() == 8 => {
                 let num = i64::from_be_bytes(bytes.as_slice().try_into().unwrap());
                 self.get_block_by_num(num)

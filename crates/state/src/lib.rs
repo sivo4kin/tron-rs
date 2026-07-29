@@ -36,6 +36,8 @@ pub mod cf {
     pub const TRANSACTION: &str = "transaction";
     pub const BLOCK_INDEX: &str = "block_index";
     pub const BROKERAGE: &str = "brokerage";
+    /// Stake 2.0 delegated-resource records (java-tron `DelegatedResourceStore`).
+    pub const DELEGATION: &str = "delegation";
     /// DEX order records, keyed by order id (java-tron `MarketOrderStore`).
     pub const MARKET_ORDER: &str = "market_order";
     /// DEX per-(pair,price) FIFO order-id lists (`MarketPairPriceToOrderStore`).
@@ -43,6 +45,12 @@ pub mod cf {
     /// DEX per-pair sorted price index (`MarketPairToPriceStore`).
     pub const MARKET_PAIR: &str = "market_pair";
     pub const DYNAMIC_PROPERTIES: &str = "properties";
+
+    /// Every column family the node uses — the RocksDB backend opens exactly
+    /// these. Re-exported from `tron_storage` (the single source of truth, since
+    /// storage cannot depend on state); the `cf_all_covers_every_const` test
+    /// asserts every named constant above appears here.
+    pub const ALL: &[&str] = tron_storage::ALL_CFS;
 }
 
 /// Dynamic-property keys (java-tron `DynamicPropertiesStore` byte-key names).
@@ -124,13 +132,13 @@ impl<S: KvStore> WorldState<S> {
 
     /// Set a witness's brokerage percentage (0..=100), keyed by address.
     pub fn put_brokerage(&self, addr: &Address, pct: i64) -> Result<(), StateError> {
-        self.db.put("brokerage", addr.as_bytes(), &pct.to_be_bytes()).map_err(Into::into)
+        self.db.put(cf::BROKERAGE, addr.as_bytes(), &pct.to_be_bytes()).map_err(Into::into)
     }
 
     /// Get a witness's brokerage percentage, defaulting to 20 when unset
     /// (java-tron `DEFAULT_BROKERAGE`).
     pub fn get_brokerage(&self, addr: &Address) -> Result<i64, StateError> {
-        match self.db.get("brokerage", addr.as_bytes())? {
+        match self.db.get(cf::BROKERAGE, addr.as_bytes())? {
             Some(b) if b.len() == 8 => Ok(i64::from_be_bytes(b.as_slice().try_into().unwrap())),
             _ => Ok(20),
         }
@@ -345,6 +353,24 @@ mod tests {
         ws.burn_trx(100).unwrap();
         ws.burn_trx(50).unwrap();
         assert_eq!(ws.get_prop_i64(props::BURN_TRX_AMOUNT).unwrap(), 150);
+    }
+
+    /// Single-source-of-truth guard: every named `cf::*` constant must appear in
+    /// `cf::ALL` (= `tron_storage::ALL_CFS`), so the RocksDB backend opens it.
+    #[test]
+    fn cf_all_covers_every_const() {
+        let named = [
+            cf::ACCOUNT, cf::CONTRACT, cf::CONTRACT_CODE, cf::CONTRACT_STORAGE,
+            cf::WITNESS, cf::VOTES, cf::ASSET, cf::PROPOSAL, cf::EXCHANGE, cf::BLOCK,
+            cf::TRANSACTION, cf::BLOCK_INDEX, cf::BROKERAGE, cf::DELEGATION,
+            cf::MARKET_ORDER, cf::MARKET_PAIR_PRICE, cf::MARKET_PAIR,
+            cf::DYNAMIC_PROPERTIES,
+        ];
+        for name in named {
+            assert!(cf::ALL.contains(&name), "cf::ALL is missing `{name}`");
+        }
+        // No stray families: ALL is exactly the named set.
+        assert_eq!(cf::ALL.len(), named.len(), "cf::ALL has entries with no named const");
     }
 
     #[test]

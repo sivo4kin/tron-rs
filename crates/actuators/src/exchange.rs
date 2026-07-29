@@ -67,7 +67,7 @@ pub const TRX_SYMBOL_BYTES: &[u8] = b"_";
 
 /// Column family for exchange records (java-tron `ExchangeV2Store`).
 /// Not yet present in `tron_state::cf`, so declared locally.
-const CF_EXCHANGE: &str = "exchange";
+const CF_EXCHANGE: &str = tron_state::cf::EXCHANGE;
 
 /// Dynamic-property key: monotonic exchange id counter.
 pub const LATEST_EXCHANGE_NUM: &str = "LATEST_EXCHANGE_NUM";

@@ -10,7 +10,7 @@ use tron_state::WorldState;
 use tron_storage::KvStore;
 use tron_types::{Address, ADDRESS_LEN};
 
-const CF_WITNESS: &str = "witness";
+const CF_WITNESS: &str = tron_state::cf::WITNESS;
 
 fn parse_address(bytes: &[u8]) -> Result<Address, ActuatorError> {
     let arr: [u8; ADDRESS_LEN] = bytes

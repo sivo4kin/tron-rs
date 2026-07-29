@@ -65,7 +65,7 @@ pub const BLOCK_PRODUCED_INTERVAL_MS: i64 = 3_000;
 pub const DELEGATE_PERIOD_MS: i64 = 3 * 86_400_000;
 
 /// Module-local column family holding delegation records (see module deviations).
-pub const DELEGATION_CF: &str = "delegation";
+pub const DELEGATION_CF: &str = tron_state::cf::DELEGATION;
 
 const BANDWIDTH: i32 = ResourceCode::Bandwidth as i32;
 const ENERGY: i32 = ResourceCode::Energy as i32;

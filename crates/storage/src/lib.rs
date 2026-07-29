@@ -15,6 +15,36 @@ pub mod rocks;
 #[cfg(feature = "rocksdb")]
 pub use rocks::RocksStore;
 
+/// The canonical set of column families the node uses. This is the single
+/// source of truth for [`rocks::RocksStore`], which must declare every family at
+/// open time (unlike [`MemoryStore`], which auto-creates on first write). It
+/// lives here — not in `tron_state::cf` — because `tron-storage` cannot depend on
+/// `tron-state` (the dependency runs the other way). `tron_state::cf` re-exports
+/// this as `cf::ALL` and a test there asserts every named `cf::*` const is in it.
+///
+/// Keep this in sync with `tron_state::cf`: every named family constant must
+/// appear here so the RocksDB backend can serve it.
+pub const ALL_CFS: &[&str] = &[
+    "account",
+    "contract",
+    "contract_code",
+    "contract_storage",
+    "witness",
+    "votes",
+    "asset",
+    "proposal",
+    "exchange",
+    "block",
+    "transaction",
+    "block_index",
+    "brokerage",
+    "delegation",
+    "market_order",
+    "market_pair_price",
+    "market_pair",
+    "properties",
+];
+
 #[derive(Debug, Error)]
 pub enum StorageError {
     #[error("unknown column family: {0}")]

@@ -20,7 +20,7 @@ use tron_state::WorldState;
 use tron_storage::KvStore;
 use tron_types::Address;
 
-const CF_WITNESS: &str = "witness";
+const CF_WITNESS: &str = tron_state::cf::WITNESS;
 
 /// Sum `vote_count` per voted witness across a set of voter accounts.
 pub fn count_votes(voters: &[protocol::Account]) -> HashMap<Vec<u8>, i64> {
