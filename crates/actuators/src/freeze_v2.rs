@@ -63,6 +63,17 @@ const BANDWIDTH: i32 = ResourceCode::Bandwidth as i32;
 const ENERGY: i32 = ResourceCode::Energy as i32;
 const TRON_POWER: i32 = ResourceCode::TronPower as i32;
 
+/// Global staked-weight total (dynamic property) for a resource type, or `None`
+/// for an unknown code. Mirrors java-tron's per-resource `addTotal*Weight` calls.
+fn total_weight_key(resource: i32) -> Option<&'static str> {
+    match resource {
+        BANDWIDTH => Some(props::TOTAL_NET_WEIGHT),
+        ENERGY => Some(props::TOTAL_ENERGY_WEIGHT),
+        TRON_POWER => Some(props::TOTAL_TRON_POWER_WEIGHT),
+        _ => None,
+    }
+}
+
 fn parse_address(bytes: &[u8]) -> Result<Address, ActuatorError> {
     let arr: [u8; ADDRESS_LEN] = bytes
         .try_into()
@@ -165,6 +176,12 @@ impl<'a> FreezeBalanceV2Actuator<'a> {
 
         account.balance = new_balance;
         state.put_account(&owner, &account)?;
+
+        // Add to the network staked-weight total (java addTotal*Weight); weight is
+        // TRX, i.e. sun / TRX_PRECISION.
+        if let Some(key) = total_weight_key(resource) {
+            state.add_prop_i64(key, frozen_balance / TRX_PRECISION)?;
+        }
 
         Ok(ExecutionResult { fee: 0 })
     }
@@ -282,6 +299,12 @@ impl<'a> UnfreezeBalanceV2Actuator<'a> {
         });
 
         state.put_account(&owner, &account)?;
+
+        // Remove from the network staked-weight total (java subtracts the same
+        // weight it added on freeze); weight is TRX = sun / TRX_PRECISION.
+        if let Some(key) = total_weight_key(resource) {
+            state.add_prop_i64(key, -(unfreeze_balance / TRX_PRECISION))?;
+        }
 
         Ok(ExecutionResult { fee: 0 })
     }
@@ -617,6 +640,28 @@ mod tests {
     }
 
     // -- invariant -------------------------------------------------------
+
+    #[test]
+    fn freeze_and_unfreeze_move_global_resource_weight() {
+        let o = addr(1);
+        let now = 1_700_000_000_000;
+        let mut ws = seeded_state(&o, 100 * TRX_PRECISION);
+        ws.put_prop_i64(props::LATEST_BLOCK_HEADER_TIMESTAMP, now).unwrap();
+
+        // Freeze 30 TRX bandwidth + 20 TRX energy -> totals track the weights.
+        do_freeze(&mut ws, &o, 30 * TRX_PRECISION, ResourceCode::Bandwidth);
+        do_freeze(&mut ws, &o, 20 * TRX_PRECISION, ResourceCode::Energy);
+        assert_eq!(ws.get_prop_i64(props::TOTAL_NET_WEIGHT).unwrap(), 30);
+        assert_eq!(ws.get_prop_i64(props::TOTAL_ENERGY_WEIGHT).unwrap(), 20);
+
+        // Unfreeze 12 TRX bandwidth -> the bandwidth total drops by 12, energy is untouched.
+        let c = unfreeze_contract(&o, 12 * TRX_PRECISION, ResourceCode::Bandwidth);
+        let a = UnfreezeBalanceV2Actuator::new(&c);
+        a.validate(&ws).unwrap();
+        a.execute(&mut ws).unwrap();
+        assert_eq!(ws.get_prop_i64(props::TOTAL_NET_WEIGHT).unwrap(), 18);
+        assert_eq!(ws.get_prop_i64(props::TOTAL_ENERGY_WEIGHT).unwrap(), 20);
+    }
 
     #[test]
     fn trx_conservation_across_freeze_and_unfreeze() {
