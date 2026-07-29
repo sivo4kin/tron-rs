@@ -14,6 +14,7 @@ pub mod cancel_unfreeze;
 pub mod clear_abi;
 pub mod delegate;
 pub mod exchange;
+pub mod freeze_v1;
 pub mod maintenance;
 pub mod asset_transfer;
 pub mod participate_asset_issue;

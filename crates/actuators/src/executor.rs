@@ -241,6 +241,18 @@ pub fn apply_transaction<S: KvStore>(
             actuator.validate(state)?;
             actuator.execute(state)
         }
+        ContractType::FreezeBalanceContract => {
+            let c: protocol::FreezeBalanceContract = unpack(contract)?;
+            let actuator = crate::freeze_v1::FreezeBalanceActuator::new(&c);
+            actuator.validate(state)?;
+            actuator.execute(state)
+        }
+        ContractType::UnfreezeBalanceContract => {
+            let c: protocol::UnfreezeBalanceContract = unpack(contract)?;
+            let actuator = crate::freeze_v1::UnfreezeBalanceActuator::new(&c);
+            actuator.validate(state)?;
+            actuator.execute(state)
+        }
         other => Err(ActuatorError::Validate(format!(
             "unsupported contract type: {other:?}"
         ))),
