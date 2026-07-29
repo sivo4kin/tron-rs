@@ -129,7 +129,7 @@ pub fn router_with_state<S: KvStore + 'static>(state: NodeState<S>) -> Router {
         .route("/wallet/getburntrx", post(get_burn_trx::<S>))
         .route("/wallet/getnextmaintenancetime", post(get_next_maintenance_time::<S>))
         .route("/wallet/totaltransaction", post(total_transaction::<S>))
-        .route("/wallet/broadcasthex", post(broadcast_hex))
+        .route("/wallet/broadcasthex", post(broadcast_hex::<S>))
         .with_state(state)
 }
 
@@ -272,19 +272,33 @@ async fn total_transaction<S: KvStore>(State(state): State<AppState<S>>) -> Json
     Json(http::total_transaction(&state))
 }
 
-async fn broadcast_hex(
-    State(mempool): State<Arc<Mutex<Mempool>>>,
+async fn broadcast_hex<S: KvStore + 'static>(
+    State(node): State<NodeState<S>>,
     Json(req): Json<Value>,
 ) -> Json<Value> {
     let result = http::broadcast_hex(&req);
-    // On a structurally-valid tx, admit it to the mempool.
+    // On a structurally-valid tx, run the consensus admission pipeline (signature,
+    // expiration/TaPoS, dedup, size) before pooling (T06).
     if result.get("result").and_then(Value::as_bool) == Some(true) {
         if let Some(hex_str) = req.get("transaction").and_then(Value::as_str) {
             if let Ok(bytes) = hex::decode(hex_str.trim_start_matches("0x")) {
                 use prost::Message;
                 if let Ok(tx) = tron_proto::protocol::Transaction::decode(bytes.as_slice()) {
-                    if let Ok(mut pool) = mempool.lock() {
-                        pool.add(tx);
+                    let now = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .map(|d| d.as_millis() as i64)
+                        .unwrap_or(0);
+                    if let Ok(mut pool) = node.mempool.lock() {
+                        // TODO(T07): pass the real actuator `validate` here; the rpc
+                        // crate has no `tron-actuators` dependency, so the actuator
+                        // check is deferred to the block-production layer that does.
+                        let _ = tron_consensus::mempool::admit_transaction(
+                            &mut pool,
+                            &node.world,
+                            &tx,
+                            now,
+                            |_, _| Ok(()),
+                        );
                     }
                 }
             }
