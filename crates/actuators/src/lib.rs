@@ -21,6 +21,8 @@ pub mod permission;
 pub mod proposal;
 pub mod smart_contract;
 pub mod transfer;
+pub mod unfreeze_asset;
+pub mod update_asset;
 pub mod update_energy_limit;
 pub mod update_setting;
 pub mod vm_host;
