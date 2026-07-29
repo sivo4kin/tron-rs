@@ -82,6 +82,11 @@ pub fn apply_genesis<S: KvStore>(
             state.put_account(&gw.address, &account)?;
         }
     }
+
+    // Seed the elected active-witness set so the intake gate has a set from block 1
+    // (the maintenance/election cycle refreshes it thereafter — TODO).
+    let active: Vec<Address> = config.witnesses.iter().map(|w| w.address).collect();
+    state.put_active_witnesses(&active)?;
     Ok(())
 }
 
@@ -135,6 +140,11 @@ mod tests {
         assert!(ws.account_exists(&addr(10)).unwrap());
 
         assert_eq!(ws.get_prop_i64(props::LATEST_BLOCK_HEADER_TIMESTAMP).unwrap(), 1_700_000_000_000);
+
+        // The active-witness set is seeded from the genesis witnesses (H05), so the
+        // intake gate has a set from block 1.
+        let active = ws.get_active_witnesses().unwrap();
+        assert_eq!(active, vec![addr(10).as_bytes().to_vec(), addr(11).as_bytes().to_vec()]);
     }
 
     #[test]

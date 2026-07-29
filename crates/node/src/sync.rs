@@ -103,7 +103,19 @@ pub async fn sync_from_best_peer<S: KvStore>(
         .map_err(|e| SyncError::State(format!("sync {addr}: {e:?}")))?;
 
     let block_bytes: Vec<Vec<u8>> = fetched.into_iter().map(|(_, b)| b).collect();
-    apply_synced_blocks(state, &block_bytes, require_sig)
+
+    // Feed the intake gate the live active-witness set: peer blocks must be signed
+    // by an active witness before we store/apply them (CS-JTRON-006/-007). Fall
+    // back to the ungated path only when the set is genuinely unknown (pre-genesis).
+    let witnesses = state
+        .get_active_witnesses()
+        .map_err(|e| SyncError::State(e.to_string()))?;
+    let gate = if witnesses.is_empty() {
+        None
+    } else {
+        Some(witnesses.as_slice())
+    };
+    apply_synced_blocks_gated(state, &block_bytes, require_sig, gate)
 }
 
 #[cfg(test)]
@@ -196,5 +208,37 @@ mod tests {
         // Skip block 1 -> block 2 is out of order.
         let err = apply_synced_blocks(&mut ws, &blocks[1..], true).unwrap_err();
         assert!(matches!(err, SyncError::OutOfOrder { expected: 1, got: 2 }));
+    }
+
+    /// H05: the intake gate is driven by the active-witness set **stored in state**
+    /// (what `sync_from_best_peer` now loads), not a hand-built list.
+    #[test]
+    fn stored_active_set_drives_the_intake_gate() {
+        use tron_crypto::{address_from_public_key, public_key};
+        use tron_types::Address;
+        let sk = SecretKey::from_slice(&[0x88u8; 32]).unwrap(); // chain()'s producer key
+        let producer = address_from_public_key(&public_key(&sk));
+        let (blocks, g) = chain(3);
+
+        // Stored set contains the producer -> the witness-signed chain applies.
+        let ws = WorldState::new(MemoryStore::new());
+        ws.put_block(&g).unwrap();
+        ws.put_active_witnesses(&[producer]).unwrap();
+        let active = ws.get_active_witnesses().unwrap();
+        let applied = apply_synced_blocks_gated(&ws, &blocks, true, Some(&active)).unwrap();
+        assert_eq!(applied, 3);
+        assert_eq!(ws.get_prop_i64(tron_state::blocks::LATEST_BLOCK_NUMBER).unwrap(), 3);
+
+        // Stored set WITHOUT the producer -> rejected before storage, head unchanged.
+        let ws2 = WorldState::new(MemoryStore::new());
+        ws2.put_block(&g).unwrap();
+        ws2.put_active_witnesses(&[Address::from_body([0x09; 20])]).unwrap();
+        let set = ws2.get_active_witnesses().unwrap();
+        let err = apply_synced_blocks_gated(&ws2, &blocks, true, Some(&set)).unwrap_err();
+        assert!(matches!(
+            err,
+            SyncError::Invalid(BlockValidationError::SignerNotActiveWitness { .. })
+        ));
+        assert_eq!(ws2.get_prop_i64(tron_state::blocks::LATEST_BLOCK_NUMBER).unwrap(), 0);
     }
 }

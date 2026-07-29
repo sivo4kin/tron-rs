@@ -20,7 +20,7 @@ use prost::Message;
 use thiserror::Error;
 use tron_proto::protocol;
 use tron_storage::{KvStore, StorageError};
-use tron_types::Address;
+use tron_types::{Address, ADDRESS_LEN};
 
 /// Column-family names (mirroring java-tron store names).
 pub mod cf {
@@ -77,6 +77,10 @@ pub mod props {
     /// TRC10 token-id counter (java-tron `TOKEN_ID_NUM`). Base `1_000_000`; each
     /// asset issue increments it and the new token takes `counter + 1`.
     pub const TOKEN_ID_NUM: &str = "TOKEN_ID_NUM";
+    /// The elected active-witness set, stored as a single record of concatenated
+    /// 21-byte addresses (java-tron `getActiveWitnesses`). `KvStore` has no
+    /// iteration, so the set is materialised explicitly rather than scanned.
+    pub const ACTIVE_WITNESSES: &str = "ACTIVE_WITNESSES";
 }
 
 #[derive(Debug, Error)]
@@ -268,6 +272,32 @@ impl<S: KvStore> WorldState<S> {
         let total = self.get_prop_i64(props::BURN_TRX_AMOUNT)?;
         self.put_prop_i64(props::BURN_TRX_AMOUNT, total.saturating_add(amount))
     }
+
+    // -- active-witness set ----------------------------------------------
+
+    /// Read the elected active-witness address list (21-byte addresses). Empty
+    /// when unset (pre-genesis). Stored as one record (java-tron
+    /// `getActiveWitnesses`); genesis seeds it and the maintenance/election cycle
+    /// should refresh it via [`Self::put_active_witnesses`].
+    // TODO(maintenance): wire the DPoS maintenance step to re-write this each round.
+    pub fn get_active_witnesses(&self) -> Result<Vec<Vec<u8>>, StateError> {
+        let bytes = self
+            .db
+            .get(cf::DYNAMIC_PROPERTIES, props::ACTIVE_WITNESSES.as_bytes())?
+            .unwrap_or_default();
+        Ok(bytes.chunks_exact(ADDRESS_LEN).map(|c| c.to_vec()).collect())
+    }
+
+    /// Replace the elected active-witness set (order preserved).
+    pub fn put_active_witnesses(&self, witnesses: &[Address]) -> Result<(), StateError> {
+        let mut buf = Vec::with_capacity(witnesses.len() * ADDRESS_LEN);
+        for w in witnesses {
+            buf.extend_from_slice(w.as_bytes());
+        }
+        self.db
+            .put(cf::DYNAMIC_PROPERTIES, props::ACTIVE_WITNESSES.as_bytes(), &buf)
+            .map_err(Into::into)
+    }
 }
 
 /// Genesis base of the TRC10 token-id counter (java-tron `getTokenIdNum`
@@ -358,6 +388,16 @@ mod tests {
         ws.burn_trx(100).unwrap();
         ws.burn_trx(50).unwrap();
         assert_eq!(ws.get_prop_i64(props::BURN_TRX_AMOUNT).unwrap(), 150);
+    }
+
+    #[test]
+    fn active_witnesses_roundtrip() {
+        let ws = WorldState::new(MemoryStore::new());
+        assert!(ws.get_active_witnesses().unwrap().is_empty()); // unset -> empty
+        let (a, b) = (addr(10), addr(11));
+        ws.put_active_witnesses(&[a, b]).unwrap();
+        let got = ws.get_active_witnesses().unwrap();
+        assert_eq!(got, vec![a.as_bytes().to_vec(), b.as_bytes().to_vec()]);
     }
 
     /// Single-source-of-truth guard: every named `cf::*` constant must appear in
