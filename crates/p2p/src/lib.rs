@@ -7,6 +7,8 @@
 
 pub mod channel;
 pub mod discovery;
+pub mod discovery_codec;
+pub mod discovery_service;
 pub mod message;
 pub mod peer;
 pub mod sync;

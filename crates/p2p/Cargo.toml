@@ -8,7 +8,8 @@ authors.workspace = true
 [dependencies]
 tron-types.workspace = true
 tron-proto.workspace = true
-tokio.workspace = true
+tokio = { workspace = true, features = ["net"] }
+tokio-util.workspace = true
 tracing.workspace = true
 
 [dev-dependencies]

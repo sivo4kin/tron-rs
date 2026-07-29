@@ -10,6 +10,7 @@ tron-types.workspace = true
 tron-proto.workspace = true
 tron-chain.workspace = true
 tron-consensus.workspace = true
+tron-p2p.workspace = true
 prost.workspace = true
 serde.workspace = true
 hex.workspace = true
@@ -23,3 +24,5 @@ tron-state.workspace = true
 reqwest.workspace = true
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 tron-storage.workspace = true
+tron-crypto.workspace = true
+prost-types.workspace = true

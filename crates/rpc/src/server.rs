@@ -9,6 +9,7 @@ use axum::{extract::State, routing::post, Json, Router};
 use serde_json::Value;
 use std::sync::{Arc, Mutex};
 use tron_consensus::mempool::Mempool;
+use tron_p2p::peer::PeerManager;
 use tron_state::WorldState;
 use tron_storage::KvStore;
 
@@ -20,17 +21,40 @@ pub type AppState<S> = Arc<WorldState<S>>;
 pub struct NodeState<S: KvStore> {
     pub world: Arc<WorldState<S>>,
     pub mempool: Arc<Mutex<Mempool>>,
+    /// Discovered peers (populated by the p2p discovery service; read by `listnodes`).
+    pub peers: Arc<Mutex<PeerManager>>,
 }
 
 impl<S: KvStore> Clone for NodeState<S> {
     fn clone(&self) -> Self {
-        Self { world: self.world.clone(), mempool: self.mempool.clone() }
+        Self {
+            world: self.world.clone(),
+            mempool: self.mempool.clone(),
+            peers: self.peers.clone(),
+        }
     }
 }
 
 impl<S: KvStore> NodeState<S> {
     pub fn new(world: Arc<WorldState<S>>) -> Self {
-        Self { world, mempool: Arc::new(Mutex::new(Mempool::default())) }
+        Self {
+            world,
+            mempool: Arc::new(Mutex::new(Mempool::default())),
+            peers: Arc::new(Mutex::new(PeerManager::new())),
+        }
+    }
+
+    /// Attach a shared peer set (the discovery service's live table) so `listnodes`
+    /// reflects discovered peers.
+    pub fn with_peers(mut self, peers: Arc<Mutex<PeerManager>>) -> Self {
+        self.peers = peers;
+        self
+    }
+
+    /// Attach a shared mempool handle (so callers can observe admitted transactions).
+    pub fn with_mempool(mut self, mempool: Arc<Mutex<Mempool>>) -> Self {
+        self.mempool = mempool;
+        self
     }
 }
 
@@ -43,6 +67,12 @@ impl<S: KvStore + 'static> FromRef<NodeState<S>> for Arc<WorldState<S>> {
 impl<S: KvStore + 'static> FromRef<NodeState<S>> for Arc<Mutex<Mempool>> {
     fn from_ref(st: &NodeState<S>) -> Self {
         st.mempool.clone()
+    }
+}
+
+impl<S: KvStore + 'static> FromRef<NodeState<S>> for Arc<Mutex<PeerManager>> {
+    fn from_ref(st: &NodeState<S>) -> Self {
+        st.peers.clone()
     }
 }
 
@@ -218,8 +248,12 @@ fn tron_p2p_port() -> u16 {
     18888
 }
 
-async fn list_nodes<S: KvStore>(State(_state): State<AppState<S>>) -> Json<Value> {
-    Json(http::list_nodes())
+async fn list_nodes(State(peers): State<Arc<Mutex<PeerManager>>>) -> Json<Value> {
+    let nodes: Vec<(String, u16)> = {
+        let pm = peers.lock().unwrap();
+        pm.addr_list().into_iter().map(|a| (a.host, a.port)).collect()
+    };
+    Json(http::list_nodes(&nodes))
 }
 
 async fn validate_address(Json(req): Json<Value>) -> Json<Value> {

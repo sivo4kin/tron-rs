@@ -69,6 +69,11 @@ impl PeerManager {
             .max_by_key(|p| p.head)
     }
 
+    /// Snapshot of every known peer address (used by the `listnodes` RPC).
+    pub fn addr_list(&self) -> Vec<PeerAddr> {
+        self.peers.values().map(|p| p.addr.clone()).collect()
+    }
+
     /// Drop peers not seen since `cutoff` (stale-peer eviction).
     pub fn prune_older_than(&mut self, cutoff: u64) -> usize {
         let before = self.peers.len();

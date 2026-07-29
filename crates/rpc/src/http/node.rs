@@ -15,10 +15,15 @@ pub fn get_node_info(network: &str, p2p_port: u16) -> Value {
     })
 }
 
-/// `POST /wallet/listnodes` — discovered peers (empty until the discovery table
-/// is populated by the live channel).
-pub fn list_nodes() -> Value {
-    json!({ "nodes": [] })
+/// `POST /wallet/listnodes` — peers known to the discovery service. Each entry is
+/// `{ "address": { "host": <ip>, "port": <tcp port> } }` (java-tron `NodeList`
+/// shape). Empty until the discovery service populates the peer table.
+pub fn list_nodes(nodes: &[(String, u16)]) -> Value {
+    let nodes: Vec<Value> = nodes
+        .iter()
+        .map(|(host, port)| json!({ "address": { "host": host, "port": port } }))
+        .collect();
+    json!({ "nodes": nodes })
 }
 
 /// `POST /wallet/listwitnesses` — the witness (SR) list (empty until the witness
@@ -36,6 +41,17 @@ mod tests {
         let info = get_node_info("nile", 18888);
         assert_eq!(info["configNodeInfo"]["listenPort"], 18888);
         assert!(info["configNodeInfo"]["codeVersion"].is_string());
-        assert_eq!(list_nodes()["nodes"].as_array().unwrap().len(), 0);
+        assert_eq!(list_nodes(&[])["nodes"].as_array().unwrap().len(), 0);
+    }
+
+    #[test]
+    fn list_nodes_reports_discovered_peers() {
+        let peers = vec![("1.2.3.4".to_string(), 18888u16), ("5.6.7.8".to_string(), 18889u16)];
+        let v = list_nodes(&peers);
+        let arr = v["nodes"].as_array().unwrap();
+        assert_eq!(arr.len(), 2);
+        assert_eq!(arr[0]["address"]["host"], "1.2.3.4");
+        assert_eq!(arr[0]["address"]["port"], 18888);
+        assert_eq!(arr[1]["address"]["port"], 18889);
     }
 }

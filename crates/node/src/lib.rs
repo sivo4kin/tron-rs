@@ -115,6 +115,11 @@ impl Node {
         );
         let state = std::sync::Arc::new(self.open_state()?);
 
+        // Shared peer table: seeded from config, then self-populated by the discovery
+        // service. The RPC `listnodes` handler reads it and the discovery service
+        // writes to it, so discovered peers surface over HTTP.
+        let peers = std::sync::Arc::new(std::sync::Mutex::new(self.config.seeded_peers()));
+
         let mut handles = Vec::new();
 
         // Real HTTP API service: serve the tron-openapi handlers on http_port until
@@ -122,7 +127,9 @@ impl Node {
         {
             let http_addr: std::net::SocketAddr =
                 ([0, 0, 0, 0], self.config.http_port).into();
-            let router = tron_rpc::server::router(state.clone());
+            let node_state =
+                tron_rpc::server::NodeState::new(state.clone()).with_peers(peers.clone());
+            let router = tron_rpc::server::router_with_state(node_state);
             let token = shutdown.clone();
             handles.push(tokio::spawn(async move {
                 match tokio::net::TcpListener::bind(http_addr).await {
@@ -166,6 +173,29 @@ impl Node {
             }));
         }
 
+        // Discovery service: bind the UDP discovery port and run the Kademlia
+        // PING/PONG/FIND_NODE loop, populating the shared peer table from the seeds.
+        // A bind failure is non-fatal (logged) so the rest of the node still runs.
+        {
+            let disc_addr: std::net::SocketAddr = ([0, 0, 0, 0], self.config.p2p_port).into();
+            let node_id = ephemeral_node_id(self.config.p2p_port);
+            let seeds = discovery_seeds(&self.config.seed_nodes);
+            let disc_peers = peers.clone();
+            let token = shutdown.clone();
+            handles.push(tokio::spawn(async move {
+                match tron_p2p::discovery_service::Discovery::bind(disc_addr, node_id, disc_peers)
+                    .await
+                {
+                    Ok(discovery) => {
+                        tracing::info!(addr = %disc_addr, seeds = seeds.len(), "discovery listening");
+                        discovery.run(seeds, token).await;
+                    }
+                    Err(e) => tracing::warn!(addr = %disc_addr, error = %e, "discovery bind failed"),
+                }
+                tracing::info!(service = "discovery", "service stopped");
+            }));
+        }
+
         // Placeholder service for the remaining subsystem (consensus/producer).
         {
             let token = shutdown.clone();
@@ -187,6 +217,43 @@ impl Node {
     }
 }
 
+/// Parse `"host:port"` seed strings into discovery [`Endpoint`](tron_p2p::discovery::Endpoint)s.
+/// Only IPv4 literals are accepted (the discovery wire format is IPv4-only);
+/// hostnames and malformed entries are skipped.
+fn discovery_seeds(seed_nodes: &[String]) -> Vec<tron_p2p::discovery::Endpoint> {
+    let mut out = Vec::new();
+    for node in seed_nodes {
+        let Some((host, port)) = node.rsplit_once(':') else { continue };
+        let (Ok(ip), Ok(port)) = (host.parse::<std::net::Ipv4Addr>(), port.parse::<u16>()) else {
+            continue;
+        };
+        out.push(tron_p2p::discovery::Endpoint::new(ip, port, port));
+    }
+    out
+}
+
+/// Derive an ephemeral 32-byte discovery node id from a seed (splitmix64 spread over
+/// 32 bytes). Deviation: real Tron ids are the node's secp256k1 public key; a random
+/// per-process id suffices for the Kademlia distance metric until node keys are wired.
+fn ephemeral_node_id(port: u16) -> [u8; 32] {
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos() as u64)
+        .unwrap_or(0);
+    let mut state = nanos ^ ((port as u64) << 48) ^ 0x9e37_79b9_7f4a_7c15;
+    let mut id = [0u8; 32];
+    for chunk in id.chunks_mut(8) {
+        // splitmix64
+        state = state.wrapping_add(0x9e37_79b9_7f4a_7c15);
+        let mut z = state;
+        z = (z ^ (z >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+        z = (z ^ (z >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+        z ^= z >> 31;
+        chunk.copy_from_slice(&z.to_be_bytes());
+    }
+    id
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -198,6 +265,30 @@ mod tests {
         assert_eq!(c.p2p_port, 18888);
         assert_eq!(c.http_port, 8090);
         assert!(c.seed_nodes.is_empty());
+    }
+
+    #[test]
+    fn discovery_seeds_parses_ipv4_and_skips_the_rest() {
+        let seeds = discovery_seeds(&[
+            "1.2.3.4:18888".into(),
+            "example.com:18888".into(), // hostname -> skipped
+            "9.9.9.9".into(),           // no port -> skipped
+            "5.6.7.8:70000".into(),     // bad port -> skipped
+            "10.0.0.1:18889".into(),
+        ]);
+        assert_eq!(seeds.len(), 2);
+        assert_eq!(seeds[0].ip, std::net::Ipv4Addr::new(1, 2, 3, 4));
+        assert_eq!(seeds[0].udp_port, 18888);
+        assert_eq!(seeds[1].ip, std::net::Ipv4Addr::new(10, 0, 0, 1));
+    }
+
+    #[test]
+    fn ephemeral_node_id_is_nonzero_and_varies() {
+        let a = ephemeral_node_id(18888);
+        assert_ne!(a, [0u8; 32]);
+        // Distinct ports (folded into the seed) should not collide deterministically.
+        let b = ephemeral_node_id(18889);
+        assert_ne!(a, b);
     }
 
     #[test]

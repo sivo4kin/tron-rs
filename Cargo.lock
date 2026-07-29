@@ -1975,10 +1975,13 @@ version = "0.0.1"
 dependencies = [
  "hex",
  "prost",
+ "prost-types",
  "thiserror",
  "tron-chain",
  "tron-crypto",
  "tron-proto",
+ "tron-state",
+ "tron-storage",
  "tron-types",
 ]
 
@@ -2024,6 +2027,7 @@ name = "tron-p2p"
 version = "0.0.1"
 dependencies = [
  "tokio",
+ "tokio-util",
  "tracing",
  "tron-proto",
  "tron-types",
@@ -2046,12 +2050,15 @@ dependencies = [
  "axum",
  "hex",
  "prost",
+ "prost-types",
  "reqwest",
  "serde",
  "serde_json",
  "tokio",
  "tron-chain",
  "tron-consensus",
+ "tron-crypto",
+ "tron-p2p",
  "tron-proto",
  "tron-state",
  "tron-storage",
