@@ -64,6 +64,7 @@ pub fn scheduled_witness<'a>(
     active.get(idx as usize)
 }
 
+pub mod election;
 pub mod fork;
 pub mod mempool;
 pub mod pbft;
