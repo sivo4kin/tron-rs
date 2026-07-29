@@ -5,6 +5,7 @@
 //! (by resource type); the unfrozen queue is cleared. Requires at least one
 //! pending unfreeze entry.
 
+use crate::freeze_v2::TRX_PRECISION;
 use crate::{ActuatorError, ExecutionResult};
 use tron_proto::protocol::account::FreezeV2;
 use tron_proto::protocol::CancelAllUnfreezeV2Contract;
@@ -49,6 +50,10 @@ impl<'a> CancelAllUnfreezeV2Actuator<'a> {
             .get_account(&owner)?
             .ok_or_else(|| ActuatorError::Execute("owner account missing".into()))?;
 
+        // Re-frozen amounts per resource type; converted to weight (TRX) and added
+        // back to the global resource-weight totals, mirroring java-tron's
+        // `addTotalResourceWeight` (BANDWIDTH=0, ENERGY=1, TRON_POWER=2).
+        let mut refrozen: [i64; 3] = [0; 3];
         let mut withdraw = 0i64;
         for u in account.unfrozen_v2.drain(..).collect::<Vec<_>>() {
             if u.unfreeze_expire_time <= now {
@@ -60,6 +65,9 @@ impl<'a> CancelAllUnfreezeV2Actuator<'a> {
                     Some(f) => f.amount += u.unfreeze_amount,
                     None => account.frozen_v2.push(FreezeV2 { r#type: u.r#type, amount: u.unfreeze_amount }),
                 }
+                if let Some(slot) = refrozen.get_mut(u.r#type as usize) {
+                    *slot += u.unfreeze_amount;
+                }
             }
         }
         account.balance = account
@@ -67,6 +75,20 @@ impl<'a> CancelAllUnfreezeV2Actuator<'a> {
             .checked_add(withdraw)
             .ok_or_else(|| ActuatorError::Execute("long overflow".into()))?;
         state.put_account(&owner, &account)?;
+
+        // Restore global staked-weight totals (amount in sun / TRX_PRECISION = weight in TRX).
+        for (ty, &amount) in refrozen.iter().enumerate() {
+            if amount == 0 {
+                continue;
+            }
+            let weight = amount / TRX_PRECISION;
+            let key = match ty {
+                0 => props::TOTAL_NET_WEIGHT,
+                1 => props::TOTAL_ENERGY_WEIGHT,
+                _ => props::TOTAL_TRON_POWER_WEIGHT,
+            };
+            state.add_prop_i64(key, weight)?;
+        }
         Ok(ExecutionResult { fee: 0 })
     }
 }
@@ -112,6 +134,31 @@ mod tests {
         assert_eq!(acc.balance, 1_000 + 300); // matured withdrawn
         assert!(acc.unfrozen_v2.is_empty()); // queue cleared
         assert_eq!(acc.frozen_v2.iter().find(|f| f.r#type == 0).unwrap().amount, 500); // pending re-frozen
+    }
+
+    #[test]
+    fn refreeze_restores_global_resource_weights() {
+        let o = addr(1);
+        // pending entries per type: bandwidth 3 TRX, energy 5 TRX, tron-power 2 TRX (in sun)
+        let mut ws = seed(
+            &o,
+            vec![
+                u(3 * TRX_PRECISION, 200, 0), // BANDWIDTH
+                u(5 * TRX_PRECISION, 200, 1), // ENERGY
+                u(2 * TRX_PRECISION, 200, 2), // TRON_POWER
+            ],
+            100,
+        );
+        CancelAllUnfreezeV2Actuator::new(&contract(&o)).execute(&mut ws).unwrap();
+        // Weights (sun / TRX_PRECISION) are added back to the global totals.
+        assert_eq!(ws.get_prop_i64(props::TOTAL_NET_WEIGHT).unwrap(), 3);
+        assert_eq!(ws.get_prop_i64(props::TOTAL_ENERGY_WEIGHT).unwrap(), 5);
+        assert_eq!(ws.get_prop_i64(props::TOTAL_TRON_POWER_WEIGHT).unwrap(), 2);
+        // Matured-only entries (already expired) do NOT touch weights.
+        let o2 = addr(2);
+        let mut ws2 = seed(&o2, vec![u(9 * TRX_PRECISION, 50, 1)], 100);
+        CancelAllUnfreezeV2Actuator::new(&contract(&o2)).execute(&mut ws2).unwrap();
+        assert_eq!(ws2.get_prop_i64(props::TOTAL_ENERGY_WEIGHT).unwrap(), 0);
     }
 
     #[test]

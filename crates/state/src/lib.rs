@@ -45,6 +45,12 @@ pub mod props {
     pub const BURN_TRX_AMOUNT: &str = "BURN_TRX_AMOUNT";
     /// Latest block header timestamp (ms) — stamped on implicitly created accounts.
     pub const LATEST_BLOCK_HEADER_TIMESTAMP: &str = "LATEST_BLOCK_HEADER_TIMESTAMP";
+    /// Total staked bandwidth weight (TRX) across all accounts — feeds resource pricing.
+    pub const TOTAL_NET_WEIGHT: &str = "TOTAL_NET_WEIGHT";
+    /// Total staked energy weight (TRX) across all accounts.
+    pub const TOTAL_ENERGY_WEIGHT: &str = "TOTAL_ENERGY_WEIGHT";
+    /// Total staked Tron-Power weight (TRX) across all accounts.
+    pub const TOTAL_TRON_POWER_WEIGHT: &str = "TOTAL_TRON_POWER_WEIGHT";
 }
 
 #[derive(Debug, Error)]
@@ -144,6 +150,14 @@ impl<S: KvStore> WorldState<S> {
         self.db
             .put(cf::DYNAMIC_PROPERTIES, key.as_bytes(), &value.to_be_bytes())
             .map_err(Into::into)
+    }
+
+    /// Add `delta` (may be negative) to a dynamic i64 property, returning the new value.
+    /// Used for the global resource-weight totals java-tron maintains on stake changes.
+    pub fn add_prop_i64(&self, key: &str, delta: i64) -> Result<i64, StateError> {
+        let v = self.get_prop_i64(key)?.saturating_add(delta);
+        self.put_prop_i64(key, v)?;
+        Ok(v)
     }
 
     /// Burn TRX (blackhole-optimization path): accumulate into `BURN_TRX_AMOUNT`.
