@@ -18,6 +18,8 @@ use tron_types::{Address, ADDRESS_LEN};
 pub mod assets;
 /// Account resource/stake endpoints (P01) — same sibling-module pattern.
 pub mod accounts;
+/// DEX / market endpoints (P03) — same sibling-module pattern.
+pub mod market;
 
 /// Error body shape java-tron returns (HTTP 200 with an `Error` field, or 400).
 fn error(msg: &str) -> Value {
