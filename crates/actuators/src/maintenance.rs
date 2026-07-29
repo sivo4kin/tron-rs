@@ -34,11 +34,13 @@ pub fn count_votes(voters: &[protocol::Account]) -> HashMap<Vec<u8>, i64> {
 }
 
 /// The java-tron witness comparator (sort-optimization on): vote count descending,
-/// then hex-address string descending. Returns addresses in elected order.
+/// then address bytes descending. Returns addresses in elected order. Delegates to
+/// the single canonical comparator [`tron_consensus::election::cmp_witness`] so the
+/// election path and the standalone [`tron_consensus::election::rank_witnesses`]
+/// helper can never disagree on the ordering.
 pub fn sort_witnesses(mut witnesses: Vec<(Vec<u8>, i64)>) -> Vec<Vec<u8>> {
     witnesses.sort_by(|a, b| {
-        b.1.cmp(&a.1) // vote count desc
-            .then_with(|| hex::encode(&b.0).cmp(&hex::encode(&a.0))) // hex addr desc
+        tron_consensus::election::cmp_witness((&a.0, a.1), (&b.0, b.1))
     });
     witnesses.into_iter().map(|(addr, _)| addr).collect()
 }
