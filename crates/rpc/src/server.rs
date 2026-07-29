@@ -74,6 +74,9 @@ pub fn router_with_state<S: KvStore + 'static>(state: NodeState<S>) -> Router {
         .route("/wallet/getpaginatedassetissuelist", post(get_paginated_asset_issue_list::<S>))
         .route("/wallet/getavailableunfreezecount", post(get_available_unfreeze_count::<S>))
         .route("/wallet/getdelegatedresourcev2", post(get_delegated_resource_v2))
+        .route("/wallet/getcanwithdrawunfreezeamount", post(get_can_withdraw_unfreeze_amount::<S>))
+        .route("/wallet/getcandelegatedmaxsize", post(get_can_delegated_max_size::<S>))
+        .route("/wallet/getdelegatedresourceaccountindexv2", post(get_delegated_resource_account_index_v2::<S>))
         .route("/wallet/getaccountnet", post(get_account_net::<S>))
         .route("/wallet/listwitnesses", post(list_witnesses))
         .route("/wallet/getnowblock", post(get_now_block::<S>))
@@ -104,6 +107,9 @@ async fn get_account<S: KvStore>(
 
 async fn get_available_unfreeze_count<S: KvStore>(State(state): State<AppState<S>>, Json(req): Json<Value>) -> Json<Value> { Json(http::get_available_unfreeze_count(&state, &req)) }
 async fn get_delegated_resource_v2(Json(req): Json<Value>) -> Json<Value> { Json(http::get_delegated_resource_v2(&req)) }
+async fn get_can_withdraw_unfreeze_amount<S: KvStore>(State(state): State<AppState<S>>, Json(req): Json<Value>) -> Json<Value> { Json(http::accounts::get_can_withdraw_unfreeze_amount(&state, &req)) }
+async fn get_can_delegated_max_size<S: KvStore>(State(state): State<AppState<S>>, Json(req): Json<Value>) -> Json<Value> { Json(http::accounts::get_can_delegated_max_size(&state, &req)) }
+async fn get_delegated_resource_account_index_v2<S: KvStore>(State(state): State<AppState<S>>, Json(req): Json<Value>) -> Json<Value> { Json(http::accounts::get_delegated_resource_account_index_v2(&state, &req)) }
 async fn get_account_net<S: KvStore>(State(state): State<AppState<S>>, Json(req): Json<Value>) -> Json<Value> { Json(http::get_account_net(&state, &req)) }
 async fn list_witnesses() -> Json<Value> { Json(http::list_witnesses()) }
 async fn get_asset_issue_by_id<S: KvStore>(State(state): State<AppState<S>>, Json(req): Json<Value>) -> Json<Value> { Json(http::assets::get_asset_issue_by_id(&state, &req)) }

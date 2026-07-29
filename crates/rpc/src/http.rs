@@ -16,6 +16,8 @@ use tron_types::{Address, ADDRESS_LEN};
 /// TRC10 asset endpoints — split into a sibling module (P02) so this file stops
 /// growing. New endpoint groups should follow the same `http::<group>` pattern.
 pub mod assets;
+/// Account resource/stake endpoints (P01) — same sibling-module pattern.
+pub mod accounts;
 
 /// Error body shape java-tron returns (HTTP 200 with an `Error` field, or 400).
 fn error(msg: &str) -> Value {
