@@ -118,8 +118,10 @@ impl<'a> MarketCancelOrderActuator<'a> {
         ids.retain(|x| *x != id);
         ob::put_order_ids(state, &pair, price, &ids)?;
         if ids.is_empty() {
-            ob::remove_price(state, &pair, price)?;
+            ob::remove_price(state, &pair, price)?; // also drops the pair if its book empties
         }
+        // Drop from the owner's secondary index (A11).
+        ob::remove_account_order(state, &order.owner_address, id)?;
 
         Ok(ExecutionResult { fee })
     }
@@ -198,6 +200,28 @@ mod tests {
         assert_eq!(order.state, State::Canceled as i32);
         assert_eq!(order.sell_token_quantity_remain, 0);
         assert_eq!(ob::best_price(&w, &ob::pair_key(A, TRX)).unwrap(), None);
+    }
+
+    #[test]
+    fn cancel_prunes_account_index_and_pair_list() {
+        let mut w = ws();
+        let m = addr(1);
+        set_account(&w, &m, 0, 200);
+        // Two resting orders on the same pair.
+        let id1 = place(&mut w, &sell(&m, A, 100, TRX, 100));
+        let id2 = place(&mut w, &sell(&m, A, 100, TRX, 90));
+        assert_eq!(ob::get_account_orders(&w, m.as_bytes()).unwrap().len(), 2);
+        assert_eq!(ob::get_pairs(&w).unwrap(), vec![ob::pair_key(A, TRX)]);
+
+        // Cancel one: it drops from the owner index; the pair remains (still has id2).
+        MarketCancelOrderActuator::new(&cancel(&m, id1)).execute(&mut w).unwrap();
+        assert_eq!(ob::get_account_orders(&w, m.as_bytes()).unwrap(), vec![id2]);
+        assert_eq!(ob::get_pairs(&w).unwrap().len(), 1);
+
+        // Cancel the last: owner index empty and the pair leaves the all-pairs list.
+        MarketCancelOrderActuator::new(&cancel(&m, id2)).execute(&mut w).unwrap();
+        assert!(ob::get_account_orders(&w, m.as_bytes()).unwrap().is_empty());
+        assert!(ob::get_pairs(&w).unwrap().is_empty());
     }
 
     #[test]

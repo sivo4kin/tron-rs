@@ -42,6 +42,8 @@ pub const ALL_CFS: &[&str] = &[
     "market_order",
     "market_pair_price",
     "market_pair",
+    "market_account_order",
+    "market_pairs",
     "properties",
 ];
 

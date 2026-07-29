@@ -45,6 +45,10 @@ pub mod cf {
     pub const MARKET_PAIR_PRICE: &str = "market_pair_price";
     /// DEX per-pair sorted price index (`MarketPairToPriceStore`).
     pub const MARKET_PAIR: &str = "market_pair";
+    /// DEX owner-address → that owner's active 32-byte order ids (secondary index).
+    pub const MARKET_ACCOUNT_ORDER: &str = "market_account_order";
+    /// DEX all-active-pairs singleton index (`MarketPairToPriceStore` key set).
+    pub const MARKET_PAIRS: &str = "market_pairs";
     pub const DYNAMIC_PROPERTIES: &str = "properties";
 
     /// Every column family the node uses — the RocksDB backend opens exactly
@@ -365,6 +369,7 @@ mod tests {
             cf::WITNESS, cf::VOTES, cf::ASSET, cf::PROPOSAL, cf::EXCHANGE, cf::BLOCK,
             cf::TRANSACTION, cf::BLOCK_INDEX, cf::BROKERAGE, cf::DELEGATION,
             cf::MARKET_ORDER, cf::MARKET_PAIR_PRICE, cf::MARKET_PAIR,
+            cf::MARKET_ACCOUNT_ORDER, cf::MARKET_PAIRS,
             cf::DYNAMIC_PROPERTIES,
         ];
         for name in named {

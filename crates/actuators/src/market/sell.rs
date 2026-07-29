@@ -147,12 +147,18 @@ impl<'a> MarketSellAssetActuator<'a> {
             next: vec![],
         };
 
+        // Secondary index: record the order under its owner (A11).
+        ob::add_account_order(state, owner.as_bytes(), id)?;
+
         Self::match_order(state, &mut taker, &mut account)?;
 
-        // Book any residual on the taker's own side.
+        // Book any residual on the taker's own side; otherwise it fully filled and
+        // is no longer live, so drop it from the owner index.
         if taker.sell_token_quantity_remain != 0 {
             let pair = ob::pair_key(&c.sell_token_id, &c.buy_token_id);
             ob::add_order_to_book(state, &pair, (c.sell_token_quantity, c.buy_token_quantity), id)?;
+        } else {
+            ob::remove_account_order(state, owner.as_bytes(), id)?;
         }
 
         ob::put_order(state, &taker)?;
@@ -204,6 +210,7 @@ impl<'a> MarketSellAssetActuator<'a> {
                 if maker.sell_token_quantity_remain == 0 {
                     maker.state = State::Inactive as i32;
                     ob::put_order(state, &maker)?;
+                    ob::remove_account_order(state, &maker.owner_address, maker_id)?;
                     ids.remove(0);
                 } else {
                     ob::put_order(state, &maker)?;
@@ -383,6 +390,39 @@ mod tests {
         // Book empty on both sides.
         assert_eq!(ob::best_price(&w, &ob::pair_key(A, TRX)).unwrap(), None);
         assert_eq!(ob::best_price(&w, &ob::pair_key(TRX, A)).unwrap(), None);
+    }
+
+    #[test]
+    fn account_index_and_pair_list_track_resting_orders() {
+        let mut w = ws();
+        let m = addr(1);
+        set_account(&w, &m, 0, 300); // 300 A
+        // Three non-crossing sell orders on pair (A, TRX) at distinct prices.
+        MarketSellAssetActuator::new(&sell(&m, A, 100, TRX, 100)).execute(&mut w).unwrap();
+        MarketSellAssetActuator::new(&sell(&m, A, 100, TRX, 90)).execute(&mut w).unwrap();
+        MarketSellAssetActuator::new(&sell(&m, A, 100, TRX, 110)).execute(&mut w).unwrap();
+
+        // Owner index lists all three; the all-pairs index has the single pair.
+        assert_eq!(ob::get_account_orders(&w, m.as_bytes()).unwrap().len(), 3);
+        let pairs = ob::get_pairs(&w).unwrap();
+        assert_eq!(pairs, vec![ob::pair_key(A, TRX)]);
+    }
+
+    #[test]
+    fn full_match_drops_both_from_account_index_and_empties_pairs() {
+        let mut w = ws();
+        let (m, t) = (addr(1), addr(2));
+        set_account(&w, &m, 0, 100);
+        set_account(&w, &t, 100, 0);
+        MarketSellAssetActuator::new(&sell(&m, A, 100, TRX, 100)).execute(&mut w).unwrap();
+        assert_eq!(ob::get_account_orders(&w, m.as_bytes()).unwrap().len(), 1);
+        assert_eq!(ob::get_pairs(&w).unwrap().len(), 1);
+
+        // Taker fully consumes the maker: both leave the account index, pairs empty.
+        MarketSellAssetActuator::new(&sell(&t, TRX, 100, A, 100)).execute(&mut w).unwrap();
+        assert!(ob::get_account_orders(&w, m.as_bytes()).unwrap().is_empty()); // maker filled
+        assert!(ob::get_account_orders(&w, t.as_bytes()).unwrap().is_empty()); // taker filled, never booked
+        assert!(ob::get_pairs(&w).unwrap().is_empty()); // no resting orders
     }
 
     #[test]

@@ -10,11 +10,10 @@
 //! - `MARKET_PAIR_PRICE`: `pair_key ‖ price16` -> FIFO run of 32-byte `order_id`s.
 //! - `pair_key(sell, buy) = sell ‖ 0x00 ‖ buy` (token ids are ascii / `"_"`).
 //!
-//! **Limitations (documented):** the order-book stores have no per-account order index
-//! and no all-pairs index, and `KvStore` has no iteration (00-conventions §2). So
-//! `getmarketorderbyaccount` and `getmarketpairlist` return empty shapes — enumerating
-//! them needs an index maintained by A09/A10 (or a `scan_prefix` on `KvStore`). The
-//! by-id / by-pair endpoints are fully served.
+//! Secondary indexes (A11) back the account/pair-list endpoints:
+//! - `MARKET_ACCOUNT_ORDER`: `owner_address (21B)` -> concatenated 32-byte `order_id`s.
+//! - `MARKET_PAIRS`: singleton (key `b"pairs"`) -> length-prefixed `u16 BE len ‖ pair_key`
+//!   runs. All five market endpoints are now fully served.
 
 use super::render_address;
 use serde_json::{json, Value};
@@ -142,21 +141,59 @@ pub fn get_market_order_list_by_pair<S: KvStore>(state: &WorldState<S>, req: &Va
 }
 
 /// `POST /wallet/getmarketorderbyaccount` — body `{ "value": "<address>" }`.
-///
-/// Deviation: the order book keeps no per-account order index (A09/A10), and `KvStore`
-/// cannot iterate, so this returns an empty order list. Serving it needs an
-/// owner->order-ids index maintained by the market actuators.
-pub fn get_market_order_by_account<S: KvStore>(_state: &WorldState<S>, _req: &Value) -> Value {
-    json!({ "orders": [] })
+/// The owner's live orders, read from the `MARKET_ACCOUNT_ORDER` index (A11):
+/// `owner_address (21B)` -> concatenated 32-byte `order_id`s.
+pub fn get_market_order_by_account<S: KvStore>(state: &WorldState<S>, req: &Value) -> Value {
+    let visible = req.get("visible").and_then(Value::as_bool).unwrap_or(false);
+    let addr = req
+        .get("value")
+        .or_else(|| req.get("address"))
+        .and_then(Value::as_str)
+        .and_then(super::parse_req_address);
+    let Some(addr) = addr else {
+        return json!({ "orders": [] });
+    };
+    let bytes = state
+        .db
+        .get(tron_state::cf::MARKET_ACCOUNT_ORDER, addr.as_bytes())
+        .ok()
+        .flatten()
+        .unwrap_or_default();
+    let orders: Vec<Value> = bytes
+        .chunks_exact(32)
+        .filter_map(|id| read_order(state, id).map(|o| order_to_json(&o, visible)))
+        .collect();
+    json!({ "orders": orders })
 }
 
-/// `POST /wallet/getmarketpairlist` — all active trading pairs.
-///
-/// Deviation: there is no all-pairs index and `KvStore` cannot iterate the
-/// `MARKET_PAIR` keys, so this returns an empty pair list. Serving it needs an
-/// all-pairs index maintained by the market actuators (or `scan_prefix` on `KvStore`).
-pub fn get_market_pair_list<S: KvStore>(_state: &WorldState<S>) -> Value {
-    json!({ "orderPair": [] })
+/// `POST /wallet/getmarketpairlist` — all active trading pairs, read from the
+/// `MARKET_PAIRS` singleton index (A11): key `b"pairs"` -> length-prefixed
+/// `u16 BE len ‖ pair_key` runs, each `pair_key = sell ‖ 0x00 ‖ buy`.
+pub fn get_market_pair_list<S: KvStore>(state: &WorldState<S>) -> Value {
+    let bytes = state
+        .db
+        .get(tron_state::cf::MARKET_PAIRS, b"pairs")
+        .ok()
+        .flatten()
+        .unwrap_or_default();
+    let mut pairs = Vec::new();
+    let mut i = 0;
+    while i + 2 <= bytes.len() {
+        let len = u16::from_be_bytes([bytes[i], bytes[i + 1]]) as usize;
+        i += 2;
+        if i + len > bytes.len() {
+            break;
+        }
+        let pk = &bytes[i..i + len];
+        i += len;
+        if let Some(pos) = pk.iter().position(|&b| b == 0x00) {
+            pairs.push(json!({
+                "sell_token_id": String::from_utf8_lossy(&pk[..pos]),
+                "buy_token_id": String::from_utf8_lossy(&pk[pos + 1..]),
+            }));
+        }
+    }
+    json!({ "orderPair": pairs })
 }
 
 #[cfg(test)]
@@ -283,15 +320,61 @@ mod tests {
             .is_empty());
     }
 
+    fn seed_account_index(ws: &WorldState<MemoryStore>, owner: &Address, ids: &[[u8; 32]]) {
+        let mut b = Vec::new();
+        for id in ids {
+            b.extend_from_slice(id);
+        }
+        ws.db.put(tron_state::cf::MARKET_ACCOUNT_ORDER, owner.as_bytes(), &b).unwrap();
+    }
+
+    fn seed_pairs(ws: &WorldState<MemoryStore>, pairs: &[(&[u8], &[u8])]) {
+        let mut b = Vec::new();
+        for (sell, buy) in pairs {
+            let pk = pair_key(sell, buy);
+            b.extend_from_slice(&(pk.len() as u16).to_be_bytes());
+            b.extend_from_slice(&pk);
+        }
+        ws.db.put(tron_state::cf::MARKET_PAIRS, b"pairs", &b).unwrap();
+    }
+
     #[test]
-    fn by_account_and_pair_list_are_empty_shapes() {
-        // documented limitations: no per-account order index, no all-pairs index.
+    fn order_by_account_returns_owner_orders() {
         let ws = WorldState::new(MemoryStore::new());
-        let addr = Address::from_body([0xe4; 20]);
-        assert!(get_market_order_by_account(&ws, &json!({ "value": addr.to_hex() }))["orders"]
+        let owner = Address::from_body([0xe4; 20]);
+        seed_order(&ws, oid(0x11), &owner, b"1000001", b"_", (100, 5));
+        seed_order(&ws, oid(0x12), &owner, b"1000001", b"_", (200, 9));
+        seed_account_index(&ws, &owner, &[oid(0x11), oid(0x12)]);
+
+        let resp = get_market_order_by_account(&ws, &json!({ "value": owner.to_hex() }));
+        let orders = resp["orders"].as_array().unwrap();
+        assert_eq!(orders.len(), 2);
+        assert_eq!(orders[0]["order_id"], hex::encode(oid(0x11)));
+        assert_eq!(orders[1]["order_id"], hex::encode(oid(0x12)));
+
+        // unknown account -> empty list
+        let other = Address::from_body([0x00; 20]);
+        assert!(get_market_order_by_account(&ws, &json!({ "value": other.to_hex() }))["orders"]
             .as_array()
             .unwrap()
             .is_empty());
-        assert!(get_market_pair_list(&ws)["orderPair"].as_array().unwrap().is_empty());
+    }
+
+    #[test]
+    fn pair_list_returns_active_pairs() {
+        let ws = WorldState::new(MemoryStore::new());
+        seed_pairs(&ws, &[(b"1000001", b"_"), (b"1000002", b"1000001")]);
+
+        let resp = get_market_pair_list(&ws);
+        let pairs = resp["orderPair"].as_array().unwrap();
+        assert_eq!(pairs.len(), 2);
+        assert_eq!(pairs[0]["sell_token_id"], "1000001");
+        assert_eq!(pairs[0]["buy_token_id"], "_");
+        assert_eq!(pairs[1]["sell_token_id"], "1000002");
+        assert_eq!(pairs[1]["buy_token_id"], "1000001");
+
+        // empty store -> empty list
+        let empty = WorldState::new(MemoryStore::new());
+        assert!(get_market_pair_list(&empty)["orderPair"].as_array().unwrap().is_empty());
     }
 }

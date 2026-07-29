@@ -10,6 +10,14 @@
 //! - `MARKET_PAIR_PRICE`: `pair_key ‖ price16` → FIFO list of `order_id`s at that
 //!   price (32 bytes each), maker priority = insertion order (price-time).
 //!
+//! Secondary indexes (A11), for the account/pair-list HTTP endpoints:
+//! - `MARKET_ACCOUNT_ORDER`: `owner_address (21B)` → concatenated 32-byte
+//!   `order_id`s of that owner's live orders (append on create; prune on
+//!   cancel/full-fill).
+//! - `MARKET_PAIRS`: singleton (key [`PAIRS_KEY`]) → the set of active `pair_key`s,
+//!   each length-prefixed `u16 BE len ‖ pair_key` (pair keys are variable length).
+//!   A pair is inserted when its first order books and removed when its book empties.
+//!
 //! `pair_key(sell, buy) = sell ‖ 0x00 ‖ buy` (token ids are ascii / `"_"`, never
 //! contain a NUL, so the delimiter is unambiguous).
 
@@ -125,7 +133,12 @@ pub fn remove_price<S: KvStore>(
 ) -> Result<(), ActuatorError> {
     let mut prices = get_prices(state, pair)?;
     prices.retain(|&p| !cmp_maker_price(p, price).is_eq());
-    put_prices(state, pair, &prices)
+    put_prices(state, pair, &prices)?;
+    // When the pair's book empties, drop it from the all-pairs index (A11).
+    if prices.is_empty() {
+        remove_pair(state, pair)?;
+    }
+    Ok(())
 }
 
 /// Best (lowest) maker price for the pair, if any.
@@ -171,7 +184,7 @@ pub fn put_order_ids<S: KvStore>(
     state.db.put(cf::MARKET_PAIR_PRICE, &key, &bytes).map_err(se)
 }
 
-/// Append an order id to the FIFO at `price`, registering the price if new.
+/// Append an order id to the FIFO at `price`, registering the price and pair if new.
 pub fn add_order_to_book<S: KvStore>(
     state: &mut WorldState<S>,
     pair: &[u8],
@@ -181,5 +194,114 @@ pub fn add_order_to_book<S: KvStore>(
     let mut ids = get_order_ids(state, pair, price)?;
     ids.push(id);
     put_order_ids(state, pair, price, &ids)?;
-    insert_price(state, pair, price)
+    insert_price(state, pair, price)?;
+    add_pair(state, pair) // register the pair in the all-pairs index (A11)
+}
+
+// -- MARKET_ACCOUNT_ORDER (owner -> live order ids) -----------------------
+
+/// The owner's live order ids (append-order).
+pub fn get_account_orders<S: KvStore>(
+    state: &WorldState<S>,
+    owner: &[u8],
+) -> Result<Vec<OrderId>, ActuatorError> {
+    let bytes = state.db.get(cf::MARKET_ACCOUNT_ORDER, owner).map_err(se)?.unwrap_or_default();
+    let mut out = Vec::with_capacity(bytes.len() / 32);
+    for chunk in bytes.chunks_exact(32) {
+        let mut id = [0u8; 32];
+        id.copy_from_slice(chunk);
+        out.push(id);
+    }
+    Ok(out)
+}
+
+fn put_account_orders<S: KvStore>(
+    state: &mut WorldState<S>,
+    owner: &[u8],
+    ids: &[OrderId],
+) -> Result<(), ActuatorError> {
+    if ids.is_empty() {
+        return state.db.delete(cf::MARKET_ACCOUNT_ORDER, owner).map_err(se);
+    }
+    let mut bytes = Vec::with_capacity(ids.len() * 32);
+    for id in ids {
+        bytes.extend_from_slice(id);
+    }
+    state.db.put(cf::MARKET_ACCOUNT_ORDER, owner, &bytes).map_err(se)
+}
+
+/// Append `id` to `owner`'s order index (idempotent).
+pub fn add_account_order<S: KvStore>(
+    state: &mut WorldState<S>,
+    owner: &[u8],
+    id: OrderId,
+) -> Result<(), ActuatorError> {
+    let mut ids = get_account_orders(state, owner)?;
+    if !ids.contains(&id) {
+        ids.push(id);
+        put_account_orders(state, owner, &ids)?;
+    }
+    Ok(())
+}
+
+/// Remove `id` from `owner`'s order index (on cancel / full fill).
+pub fn remove_account_order<S: KvStore>(
+    state: &mut WorldState<S>,
+    owner: &[u8],
+    id: OrderId,
+) -> Result<(), ActuatorError> {
+    let mut ids = get_account_orders(state, owner)?;
+    ids.retain(|x| *x != id);
+    put_account_orders(state, owner, &ids)
+}
+
+// -- MARKET_PAIRS (all active pairs, singleton) ---------------------------
+
+/// Fixed key for the all-pairs singleton record in `cf::MARKET_PAIRS`.
+pub const PAIRS_KEY: &[u8] = b"pairs";
+
+/// The set of active `pair_key`s (length-prefixed decode).
+pub fn get_pairs<S: KvStore>(state: &WorldState<S>) -> Result<Vec<Vec<u8>>, ActuatorError> {
+    let bytes = state.db.get(cf::MARKET_PAIRS, PAIRS_KEY).map_err(se)?.unwrap_or_default();
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i + 2 <= bytes.len() {
+        let len = u16::from_be_bytes([bytes[i], bytes[i + 1]]) as usize;
+        i += 2;
+        if i + len > bytes.len() {
+            break;
+        }
+        out.push(bytes[i..i + len].to_vec());
+        i += len;
+    }
+    Ok(out)
+}
+
+fn put_pairs<S: KvStore>(state: &mut WorldState<S>, pairs: &[Vec<u8>]) -> Result<(), ActuatorError> {
+    if pairs.is_empty() {
+        return state.db.delete(cf::MARKET_PAIRS, PAIRS_KEY).map_err(se);
+    }
+    let mut bytes = Vec::new();
+    for p in pairs {
+        bytes.extend_from_slice(&(p.len() as u16).to_be_bytes());
+        bytes.extend_from_slice(p);
+    }
+    state.db.put(cf::MARKET_PAIRS, PAIRS_KEY, &bytes).map_err(se)
+}
+
+/// Insert `pair` into the all-pairs index (idempotent).
+pub fn add_pair<S: KvStore>(state: &mut WorldState<S>, pair: &[u8]) -> Result<(), ActuatorError> {
+    let mut pairs = get_pairs(state)?;
+    if !pairs.iter().any(|p| p.as_slice() == pair) {
+        pairs.push(pair.to_vec());
+        put_pairs(state, &pairs)?;
+    }
+    Ok(())
+}
+
+/// Remove `pair` from the all-pairs index.
+pub fn remove_pair<S: KvStore>(state: &mut WorldState<S>, pair: &[u8]) -> Result<(), ActuatorError> {
+    let mut pairs = get_pairs(state)?;
+    pairs.retain(|p| p.as_slice() != pair);
+    put_pairs(state, &pairs)
 }
