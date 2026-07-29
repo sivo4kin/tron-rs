@@ -50,8 +50,8 @@ pub enum OpCode {
     IsContract = 0xd4,
     Stake = 0xd5,
     Unstake = 0xd6,
+    VoteWitness = 0xd8,
     WithdrawReward = 0xd9,
-    RewardBalance = 0xd8,
     IsWitness = 0xda,
     Call = 0xf1,
     Return = 0xf3,
@@ -105,7 +105,7 @@ impl OpCode {
             0xd4 => IsContract,
             0xd5 => Stake,
             0xd6 => Unstake,
-            0xd8 => RewardBalance,
+            0xd8 => VoteWitness,
             0xd9 => WithdrawReward,
             0xda => IsWitness,
             0xf1 => Call,
@@ -132,9 +132,11 @@ mod tests {
         assert_eq!(OpCode::CallToken as u8, 0xd0);
         assert_eq!(OpCode::TokenBalance as u8, 0xd1);
         assert_eq!(OpCode::IsContract as u8, 0xd4);
+        assert_eq!(OpCode::VoteWitness as u8, 0xd8); // java-tron Op.VOTEWITNESS
         assert_eq!(OpCode::WithdrawReward as u8, 0xd9);
         assert_eq!(OpCode::IsWitness as u8, 0xda);
         assert!(OpCode::CallToken.is_tron_specific());
+        assert!(OpCode::VoteWitness.is_tron_specific());
         assert!(!OpCode::Add.is_tron_specific());
     }
 

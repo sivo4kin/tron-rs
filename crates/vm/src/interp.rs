@@ -315,6 +315,31 @@ pub fn run_with_input(code: &[u8], calldata: &[u8], limit: u64, host: &mut dyn H
                 let halt = if op == OpCode::Return { Halt::Return } else { Halt::Revert };
                 return done_out(halt, &stack, &meter, output);
             }
+            OpCode::VoteWitness => {
+                // Stack (java-tron getVoteWitnessCost2), top-first: amountArrayLength,
+                // amountArrayOffset, witnessArrayLength, witnessArrayOffset.
+                let amount_len = pop!().low_u64();
+                let amount_off = pop!().low_u64();
+                let witness_len = pop!().low_u64();
+                let witness_off = pop!().low_u64();
+                // VOTE_WITNESS base (java EnergyCost.VOTE_WITNESS).
+                if !meter.charge(crate::energy::VOTE_WITNESS) {
+                    return done(Halt::OutOfEnergy, &stack, &meter);
+                }
+                // CS-JTRON-005: memory must cover offset + len*32 + 32 for each array;
+                // the trailing size word is charged even when len == 0. `expand_to`
+                // both grows memory and returns the expansion energy to charge.
+                let needed =
+                    crate::energy::vote_witness_mem_needed(witness_off, witness_len, amount_off, amount_len);
+                if !meter.charge(mem.expand_to(needed as usize)) {
+                    return done(Halt::OutOfEnergy, &stack, &meter);
+                }
+                // Recording the vote needs a witness/vote host, which this
+                // single-contract core lacks; the vote effect is not applied here
+                // (documented, same posture as SELFDESTRUCT in interp). Push success=0
+                // to preserve stack discipline.
+                push!(U256::zero());
+            }
             other => return done(Halt::BadOpcode(other as u8), &stack, &meter),
         }
         pc += 1;
@@ -510,6 +535,50 @@ mod tests {
             p(Push1), 0, p(Push1), 0x99, p(Push1), 0, p(Call), p(Stop),
         ];
         assert_eq!(run_mem(&code, 100000).stack_top, Some(U256::zero()));
+    }
+
+    #[test]
+    fn votewitness_prices_size_word_at_high_offset() {
+        // Push witnessOffset, witnessLength, amountOffset, amountLength (bottom->top),
+        // then VOTEWITNESS. Both arrays zero-length; witness offset is high (10000).
+        // CS-JTRON-005: the size-word memory access must be charged, so the run costs
+        // strictly more than the VOTE_WITNESS base and more than a zero-offset run.
+        let p = |op: crate::opcode::OpCode| op as u8;
+        let high = [
+            p(Push2), 0x27, 0x10, // witnessOffset = 10000
+            p(Push1), 0,          // witnessLength = 0
+            p(Push1), 0,          // amountOffset = 0
+            p(Push1), 0,          // amountLength = 0
+            p(VoteWitness), p(Stop),
+        ];
+        let low = [
+            p(Push1), 0, // witnessOffset = 0
+            p(Push1), 0, // witnessLength = 0
+            p(Push1), 0, // amountOffset = 0
+            p(Push1), 0, // amountLength = 0
+            p(VoteWitness), p(Stop),
+        ];
+        let out_high = run_mem(&high, 1_000_000);
+        let out_low = run_mem(&low, 1_000_000);
+        assert_eq!(out_high.halt, Halt::Stop);
+        assert_eq!(out_low.halt, Halt::Stop);
+        assert!(out_high.energy_used > crate::energy::VOTE_WITNESS, "high-offset must exceed base");
+        assert!(out_low.energy_used > crate::energy::VOTE_WITNESS, "even offset 0 pays one size word");
+        assert!(out_high.energy_used > out_low.energy_used, "high offset must cost more than offset 0");
+        // The opcode pushed its (unsupported-vote) success flag 0.
+        assert_eq!(out_high.stack_top, Some(U256::zero()));
+    }
+
+    #[test]
+    fn votewitness_out_of_energy_on_base() {
+        // Not enough energy to cover even the VOTE_WITNESS base -> OOG (no push).
+        let p = |op: crate::opcode::OpCode| op as u8;
+        let code = [
+            p(Push1), 0, p(Push1), 0, p(Push1), 0, p(Push1), 0, p(VoteWitness), p(Stop),
+        ];
+        // 4 pushes cost 3 each = 12; give 12 + a little, less than VOTE_WITNESS (30000).
+        let out = run_mem(&code, 100);
+        assert_eq!(out.halt, Halt::OutOfEnergy);
     }
 
     #[test]
