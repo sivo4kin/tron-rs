@@ -13,6 +13,10 @@ use tron_state::WorldState;
 use tron_storage::KvStore;
 use tron_types::{Address, ADDRESS_LEN};
 
+/// TRC10 asset endpoints — split into a sibling module (P02) so this file stops
+/// growing. New endpoint groups should follow the same `http::<group>` pattern.
+pub mod assets;
+
 /// Error body shape java-tron returns (HTTP 200 with an `Error` field, or 400).
 fn error(msg: &str) -> Value {
     json!({ "Error": msg })
@@ -527,24 +531,6 @@ pub fn get_paginated_exchange_list<S: KvStore>(state: &WorldState<S>, req: &Valu
     json!({ "exchanges": exchanges })
 }
 
-/// `POST /wallet/getassetissuelist` — TRC10 asset issuances.
-pub fn get_asset_issue_list() -> Value {
-    json!({ "assetIssue": [] })
-}
-
-
-/// `POST /wallet/getassetissuebyid` / `getassetissuebyname` — TRC10 asset lookup
-/// (empty until the asset store is populated; returns the empty object shape).
-pub fn get_asset_issue_by_key(_req: &Value) -> Value {
-    json!({})
-}
-
-/// `POST /wallet/getpaginatedassetissuelist` — body `{ "offset": o, "limit": l }`.
-pub fn get_paginated_asset_issue_list(_req: &Value) -> Value {
-    json!({ "assetIssue": [] })
-}
-
-
 /// `POST /wallet/getavailableunfreezecount` — pending Stake 2.0 unfreeze slots
 /// used by the account (java-tron caps concurrent unfreezes at 32).
 pub fn get_available_unfreeze_count<S: KvStore>(state: &WorldState<S>, req: &Value) -> Value {
@@ -877,7 +863,7 @@ mod tests {
         let ws = WorldState::new(MemoryStore::new());
         assert!(list_exchanges(&ws)["exchanges"].as_array().unwrap().is_empty());
         assert!(list_proposals(&ws)["proposals"].as_array().unwrap().is_empty());
-        assert!(get_asset_issue_list()["assetIssue"].as_array().unwrap().is_empty());
+        // asset endpoints moved to `http::assets` (tested there).
     }
 
     // -- Proposals & exchanges (P04) --------------------------------------
@@ -992,12 +978,6 @@ mod tests {
         let arr = page["exchanges"].as_array().unwrap();
         assert_eq!(arr.len(), 1);
         assert_eq!(arr[0]["exchange_id"], 1);
-    }
-
-    #[test]
-    fn asset_query_endpoints() {
-        assert_eq!(get_asset_issue_by_key(&json!({ "value": "1000001" })), json!({}));
-        assert!(get_paginated_asset_issue_list(&json!({ "offset": 0, "limit": 10 }))["assetIssue"].as_array().unwrap().is_empty());
     }
 
     #[test]
