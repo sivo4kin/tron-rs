@@ -61,8 +61,12 @@ pub fn router_with_state<S: KvStore + 'static>(state: NodeState<S>) -> Router {
         .route("/wallet/getenergyprices", post(get_energy_prices::<S>))
         .route("/wallet/getbandwidthprices", post(get_bandwidth_prices::<S>))
         .route("/wallet/getmemofee", post(get_memo_fee::<S>))
-        .route("/wallet/listexchanges", post(list_exchanges))
-        .route("/wallet/listproposals", post(list_proposals))
+        .route("/wallet/listexchanges", post(list_exchanges::<S>))
+        .route("/wallet/listproposals", post(list_proposals::<S>))
+        .route("/wallet/getproposalbyid", post(get_proposal_by_id::<S>))
+        .route("/wallet/getpaginatedproposallist", post(get_paginated_proposal_list::<S>))
+        .route("/wallet/getexchangebyid", post(get_exchange_by_id::<S>))
+        .route("/wallet/getpaginatedexchangelist", post(get_paginated_exchange_list::<S>))
         .route("/wallet/getassetissuelist", post(get_asset_issue_list))
         .route("/wallet/getassetissuebyid", post(get_asset_issue_by_key))
         .route("/wallet/getassetissuebyname", post(get_asset_issue_by_key))
@@ -103,8 +107,12 @@ async fn get_account_net<S: KvStore>(State(state): State<AppState<S>>, Json(req)
 async fn list_witnesses() -> Json<Value> { Json(http::list_witnesses()) }
 async fn get_asset_issue_by_key(Json(req): Json<Value>) -> Json<Value> { Json(http::get_asset_issue_by_key(&req)) }
 async fn get_paginated_asset_issue_list(Json(req): Json<Value>) -> Json<Value> { Json(http::get_paginated_asset_issue_list(&req)) }
-async fn list_exchanges() -> Json<Value> { Json(http::list_exchanges()) }
-async fn list_proposals() -> Json<Value> { Json(http::list_proposals()) }
+async fn list_exchanges<S: KvStore>(State(state): State<AppState<S>>) -> Json<Value> { Json(http::list_exchanges(&state)) }
+async fn list_proposals<S: KvStore>(State(state): State<AppState<S>>) -> Json<Value> { Json(http::list_proposals(&state)) }
+async fn get_proposal_by_id<S: KvStore>(State(state): State<AppState<S>>, Json(req): Json<Value>) -> Json<Value> { Json(http::get_proposal_by_id(&state, &req)) }
+async fn get_paginated_proposal_list<S: KvStore>(State(state): State<AppState<S>>, Json(req): Json<Value>) -> Json<Value> { Json(http::get_paginated_proposal_list(&state, &req)) }
+async fn get_exchange_by_id<S: KvStore>(State(state): State<AppState<S>>, Json(req): Json<Value>) -> Json<Value> { Json(http::get_exchange_by_id(&state, &req)) }
+async fn get_paginated_exchange_list<S: KvStore>(State(state): State<AppState<S>>, Json(req): Json<Value>) -> Json<Value> { Json(http::get_paginated_exchange_list(&state, &req)) }
 async fn get_asset_issue_list() -> Json<Value> { Json(http::get_asset_issue_list()) }
 
 async fn get_energy_prices<S: KvStore>(State(state): State<AppState<S>>) -> Json<Value> {
