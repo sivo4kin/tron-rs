@@ -4,6 +4,7 @@
 //! signal, and stop cleanly. Later phases replace the placeholder services with the
 //! real p2p, consensus, and rpc subsystems.
 
+pub mod net;
 pub mod sync;
 
 use serde::Deserialize;
@@ -120,6 +121,11 @@ impl Node {
         // writes to it, so discovered peers surface over HTTP.
         let peers = std::sync::Arc::new(std::sync::Mutex::new(self.config.seeded_peers()));
 
+        // Shared mempool: broadcasthex (rpc) and inbound tx gossip (channel service)
+        // admit into the same pool.
+        let mempool =
+            std::sync::Arc::new(std::sync::Mutex::new(tron_consensus::mempool::Mempool::default()));
+
         let mut handles = Vec::new();
 
         // Real HTTP API service: serve the tron-openapi handlers on http_port until
@@ -127,8 +133,9 @@ impl Node {
         {
             let http_addr: std::net::SocketAddr =
                 ([0, 0, 0, 0], self.config.http_port).into();
-            let node_state =
-                tron_rpc::server::NodeState::new(state.clone()).with_peers(peers.clone());
+            let node_state = tron_rpc::server::NodeState::new(state.clone())
+                .with_peers(peers.clone())
+                .with_mempool(mempool.clone());
             let router = tron_rpc::server::router_with_state(node_state);
             let token = shutdown.clone();
             handles.push(tokio::spawn(async move {
@@ -193,6 +200,40 @@ impl Node {
                     Err(e) => tracing::warn!(addr = %disc_addr, error = %e, "discovery bind failed"),
                 }
                 tracing::info!(service = "discovery", "service stopped");
+            }));
+        }
+
+        // Channel service: bind the TCP p2p port, keep persistent peer connections,
+        // gossip block/tx inventory, and apply inbound blocks through the intake gate.
+        // Dials the currently-known peers; a bind failure is non-fatal.
+        {
+            let chan_addr: std::net::SocketAddr = ([0, 0, 0, 0], self.config.p2p_port).into();
+            let handler = std::sync::Arc::new(crate::net::NodeChannelHandler::new(
+                state.clone(),
+                mempool.clone(),
+                true,
+            ));
+            let (service, _advertise) =
+                tron_p2p::service::ChannelService::new(handler, Default::default());
+            let dial: Vec<std::net::SocketAddr> = peers
+                .lock()
+                .map(|pm| {
+                    pm.addr_list()
+                        .iter()
+                        .filter_map(|a| format!("{}:{}", a.host, a.port).parse().ok())
+                        .collect()
+                })
+                .unwrap_or_default();
+            let token = shutdown.clone();
+            handles.push(tokio::spawn(async move {
+                match tokio::net::TcpListener::bind(chan_addr).await {
+                    Ok(listener) => {
+                        tracing::info!(addr = %chan_addr, dial = dial.len(), "channel listening");
+                        service.run(listener, dial, token).await;
+                    }
+                    Err(e) => tracing::warn!(addr = %chan_addr, error = %e, "channel bind failed"),
+                }
+                tracing::info!(service = "channel", "service stopped");
             }));
         }
 
