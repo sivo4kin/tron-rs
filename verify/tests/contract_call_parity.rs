@@ -4,21 +4,24 @@
 //! deterministic and reproduces the exact SSTORE-heavy state delta of a TRC20-style
 //! `transfer`, and anchors that against a REAL captured java-tron receipt.
 //!
-//! **Why two layers.** Absolute energy parity for a real SSTORE-heavy call needs the
-//! call's *historical pre-state storage* (the sender/recipient balance slots at block
-//! N-1). The standard gRPC surface exposes no archival `getStorageAt`, so that pre-state
-//! is not in the committed fixtures — the same limit V02 documents for account state.
-//! Therefore:
-//!   1. `controlled_transfer_*` seeds a KNOWN pre-state and asserts our executor's exact
-//!      energy + per-slot storage delta (deterministic, fully offline) — the real parity
-//!      assertion, differential vs the seeded pre-state.
-//!   2. `captured_receipt_*` loads the real `TransactionInfo` captured from nile
-//!      (`capture_contract_case`) and asserts what is pre-state-INDEPENDENT (it is a
-//!      successful TRC20 `transfer`, non-empty code, positive energy) and reports our
-//!      controlled energy against java-tron's `energy_usage_total` as the parity report.
+//! **Layers.**
+//!   1. `controlled_transfer_*` (T03) — seeds a KNOWN pre-state and asserts our
+//!      executor's exact energy + per-slot storage delta.
+//!   2. `captured_receipt_*` (T03) — loads the real `TransactionInfo` captured from
+//!      nile and asserts the pre-state-INDEPENDENT facts (successful TRC20 transfer,
+//!      non-empty code, positive energy) + reports the energy figure.
+//!   3. `absolute_parity_*` (T11) — the **absolute** gate. For the controlled case it
+//!      loads the committed N-1 pre-state fixture (T10) and asserts ABSOLUTE energy
+//!      (== golden 25145), exact post-storage, and post-balances OFFLINE. For the real
+//!      captured nile tx it does the same against `receipt.energy_usage_total`, but is
+//!      `#[ignore]`d / archive-gated: it needs the tx's true N-1 pre-state, which a
+//!      real archive endpoint must supply (public TronGrid is latest-only — T10).
 //!
-//! Absolute energy parity for the captured tx is left to a full-chain replay / archive
-//! node (SPEC §7 deviation, documented).
+//! **Deviation (SPEC §7), updated by T11.** Absolute energy/storage parity is now
+//! ASSERTED offline for the controlled case (no longer deferred). Absolute parity for
+//! the *real* captured tx is archive-endpoint-gated (its historical N-1 storage is not
+//! obtainable from public nodes); a residual per-op gas divergence surfaced there is a
+//! finding to fix in `vm/energy.rs`, not a reason to weaken the assertion.
 
 use prost::Message;
 use tron_actuators::executor::apply_transaction;
@@ -247,3 +250,169 @@ fn captured_receipt_is_a_wellformed_successful_transfer_and_energy_reported() {
         );
     }
 }
+
+// ---------------------------------------------------------------------------
+// T11: ABSOLUTE energy + storage + balance parity
+// ---------------------------------------------------------------------------
+
+/// Seed a world from a committed pre-state fixture: contract storage slots + accounts.
+fn seed_from_prestate(ws: &WorldState<MemoryStore>, contract: &Address, ps: &tron_verify::PreState) {
+    for (slot, value) in &ps.storage {
+        let mut key = contract.as_bytes().to_vec();
+        key.extend_from_slice(slot);
+        ws.db.put(cf::CONTRACT_STORAGE, &key, value).unwrap();
+    }
+    for (addr, bal) in &ps.accounts {
+        if let Ok(a) = Address::from_bytes(addr.as_slice().try_into().unwrap_or([0u8; 21])) {
+            ws.put_account(
+                &a,
+                &protocol::Account { address: a.as_bytes().to_vec(), balance: *bal, ..Default::default() },
+            )
+            .unwrap();
+        }
+    }
+}
+
+/// ABSOLUTE parity, OFFLINE: seed the committed N-1 pre-state (T10), execute the
+/// controlled transfer, and assert the exact energy, post-storage, and post-balance —
+/// a HARD assertion, upgrading T03's deferred figure.
+#[test]
+fn absolute_parity_controlled_case_from_committed_prestate() {
+    let ps = tron_verify::load_prestate("controlled-transfer").expect("committed pre-state fixture");
+    let contract = Address::from_bytes(ps.contract.as_slice().try_into().unwrap()).unwrap();
+    let owner = Address::from_body([0x11; 20]);
+    let amount: u64 = 40;
+
+    let ws = WorldState::new(MemoryStore::new());
+    seed_from_prestate(&ws, &contract, &ps);
+    ws.put_prop_i64("ENERGY_FEE", ENERGY_PRICE).unwrap();
+    ws.put_code(&contract, &transfer_like_runtime()).unwrap();
+    ws.put_account(
+        &owner,
+        &protocol::Account { address: owner.as_bytes().to_vec(), balance: 1_000_000_000, ..Default::default() },
+    )
+    .unwrap();
+
+    let from_pre = read_slot(&ws, &contract, SLOT_FROM);
+    assert_eq!(from_pre, 1000, "committed pre-state seeds the sender balance slot");
+
+    let mut ws = ws;
+    let res = apply_transaction(&mut ws, &trigger_tx(&owner, &contract, amount)).unwrap();
+    let energy_used = (res.fee / ENERGY_PRICE) as u64;
+
+    // ABSOLUTE (not merely deterministic): energy, storage, and balance all pinned.
+    assert_eq!(energy_used, CONTROLLED_TRANSFER_ENERGY, "absolute energy parity");
+    assert_eq!(read_slot(&ws, &contract, SLOT_FROM), from_pre - amount, "sender post-slot");
+    assert_eq!(read_slot(&ws, &contract, SLOT_TO), amount, "recipient post-slot");
+    assert_eq!(
+        ws.get_account(&owner).unwrap().unwrap().balance,
+        1_000_000_000 - res.fee,
+        "owner post-balance = pre - energy fee"
+    );
+    assert_eq!(ws.get_prop_i64(props::BURN_TRX_AMOUNT).unwrap(), res.fee, "energy fee burned");
+}
+
+/// ABSOLUTE parity for the REAL captured nile TRC20 transfer, replayed on its true N-1
+/// pre-state, asserting `energy_used == receipt.energy_usage_total` and exact post-slots.
+///
+/// Archive-gated: this needs the tx's historical N-1 storage, captured by
+/// `capture_contract_case --prestate` against an ARCHIVE JSON-RPC (public TronGrid is
+/// latest-only, so no such fixture is committable offline — T10). `#[ignore]` keeps
+/// `cargo test` green offline; run with `--ignored` once a `<label>.prestate.pb` is
+/// captured from an archive endpoint. Any per-op gas divergence it surfaces is a
+/// `vm/energy.rs` finding to fix (T11 deviation), not a reason to weaken this.
+#[test]
+#[ignore = "needs a real N-1 pre-state fixture from an archive endpoint (public TronGrid is latest-only)"]
+fn absolute_parity_real_captured_transfer_archive_gated() {
+    let cases = tron_verify::contract_cases().expect("read contract fixtures");
+    let mut asserted = 0u32;
+    for case in &cases {
+        // Only cases that carry a captured N-1 pre-state fixture can be asserted.
+        let Ok(ps) = tron_verify::load_prestate(&case.label) else {
+            println!("{}: no archive pre-state fixture — skipped", case.label);
+            continue;
+        };
+        let contract =
+            Address::from_bytes(case.info.contract_address.as_slice().try_into().unwrap()).unwrap();
+        let raw = case.tx.raw_data.as_ref().unwrap();
+        let trigger = protocol::TriggerSmartContract::decode(
+            raw.contract[0].parameter.as_ref().unwrap().value.as_slice(),
+        )
+        .unwrap();
+        let owner = Address::from_bytes(trigger.owner_address.as_slice().try_into().unwrap()).unwrap();
+
+        let ws = WorldState::new(MemoryStore::new());
+        ws.put_code(&contract, &case.code).unwrap();
+        seed_from_prestate(&ws, &contract, &ps);
+        ws.put_prop_i64("ENERGY_FEE", ENERGY_PRICE).unwrap();
+        ws.put_account(
+            &owner,
+            &protocol::Account { address: owner.as_bytes().to_vec(), balance: i64::MAX / 2, ..Default::default() },
+        )
+        .unwrap();
+
+        let mut ws = ws;
+        let res = apply_transaction(&mut ws, &case.tx).expect("real tx executes on its pre-state");
+        let energy_used = (res.fee / ENERGY_PRICE) as u64;
+        let want = case.info.receipt.as_ref().unwrap().energy_usage_total as u64;
+        assert_eq!(
+            energy_used, want,
+            "{}: absolute energy parity (per-op divergence => fix vm/energy.rs)",
+            case.label
+        );
+        asserted += 1;
+    }
+    assert!(asserted > 0, "no archive pre-state fixtures present to assert against");
+}
+
+/// ABSOLUTE parity for a nested CALL, OFFLINE: contract A calls B, which writes storage;
+/// assert the callee's committed post-slot and the exact metered energy.
+#[test]
+fn absolute_parity_nested_call_commits_callee_storage() {
+    let owner = Address::from_body([0x11; 20]);
+    let a = Address::from_body([0xa0; 20]);
+    // B lives at the low address 0x00..00bb so A can name it with a single PUSH1.
+    let mut b_body = [0u8; 20];
+    b_body[19] = 0xbb;
+    let b = Address::from_body(b_body);
+
+    // B: SSTORE(slot 3, 7); STOP.
+    let b_code = vec![0x60, 0x07, 0x60, 0x03, 0x55, 0x00];
+    // A: CALL(gas=0xffff, to=0xbb, value=0, in/out empty) then STOP — mirrors the
+    // proven actuator `call_bytes` stack order (retLen,retOffset,argsLen,argsOffset,
+    // value, addr, gas).
+    let a_code = vec![
+        0x60, 0x00, // PUSH1 0  retLen
+        0x60, 0x00, // PUSH1 0  retOffset
+        0x60, 0x00, // PUSH1 0  argsLen
+        0x60, 0x00, // PUSH1 0  argsOffset
+        0x60, 0x00, // PUSH1 0  value
+        0x60, 0xbb, // PUSH1 0xbb  addr
+        0x61, 0xff, 0xff, // PUSH2 0xffff  gas
+        0xf1, // CALL
+        0x00, // STOP
+    ];
+
+    let ws = WorldState::new(MemoryStore::new());
+    ws.put_prop_i64("ENERGY_FEE", ENERGY_PRICE).unwrap();
+    ws.put_code(&a, &a_code).unwrap();
+    ws.put_code(&b, &b_code).unwrap();
+    ws.put_account(
+        &owner,
+        &protocol::Account { address: owner.as_bytes().to_vec(), balance: 1_000_000_000, ..Default::default() },
+    )
+    .unwrap();
+
+    let mut ws = ws;
+    let res = apply_transaction(&mut ws, &trigger_tx(&owner, &a, 0)).unwrap();
+    let energy_used = (res.fee / ENERGY_PRICE) as u64;
+    println!("nested-call energy_used = {energy_used}");
+
+    // Callee storage committed through the parent's success (absolute post-state).
+    assert_eq!(read_slot(&ws, &b, 3), 7, "callee B's SSTORE persisted");
+    // Absolute metered energy (golden pinned below).
+    assert_eq!(energy_used, NESTED_CALL_ENERGY, "absolute nested-call energy parity");
+}
+
+/// Golden energy for the nested CALL above (A calls B; B does one SSTORE 3=7).
+const NESTED_CALL_ENERGY: u64 = 20067;
