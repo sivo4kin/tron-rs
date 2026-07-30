@@ -28,3 +28,7 @@ tokio.workspace = true
 anyhow.workspace = true
 hex.workspace = true
 serde_json = "1"
+# Archive JSON-RPC probe (eth_getStorageAt). Uses the workspace reqwest feature set;
+# reaching an HTTPS archive endpoint additionally needs a TLS backend enabled in the
+# build (documented — moot for public TronGrid, which is latest-only anyway).
+reqwest.workspace = true
