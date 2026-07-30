@@ -11,12 +11,20 @@
 
 use prost::Message;
 use std::collections::{HashMap, HashSet};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 use tron_consensus::mempool::{admit_transaction, Mempool};
 use tron_consensus::pbft::{accept_pbft_message, is_finalized, solidified_block, PbftCommit};
-use tron_p2p::service::ChannelHandler;
+use tron_crypto::{address_from_public_key, public_key, sign_digest, SecretKey};
+use tron_p2p::service::{ChannelHandle, ChannelHandler};
 use tron_state::{blocks::LATEST_BLOCK_NUMBER, props, WorldState};
 use tron_storage::KvStore;
+
+/// This node's SR identity for PBFT commit generation: its witness secret key and
+/// 21-byte address (T09).
+struct WitnessCommitter {
+    key: SecretKey,
+    address: Vec<u8>,
+}
 
 /// A [`ChannelHandler`] over the node's shared world state + mempool.
 pub struct NodeChannelHandler<S: KvStore> {
@@ -28,11 +36,76 @@ pub struct NodeChannelHandler<S: KvStore> {
     /// committed it. Kept bounded (H01) — entries below the solidified block are
     /// pruned as finality advances.
     confirmations: Mutex<HashMap<i64, HashSet<Vec<u8>>>>,
+    /// This node's SR identity, present only on witness-configured nodes (T09). When
+    /// set, the node signs + broadcasts a PBFT commit for each block it accepts/produces.
+    witness: Option<WitnessCommitter>,
+    /// Handle to broadcast our own commits. Injected after the `ChannelService` is
+    /// built (the handle is created alongside the service, so it can't be passed in at
+    /// construction).
+    commit_out: OnceLock<ChannelHandle>,
 }
 
-impl<S: KvStore> NodeChannelHandler<S> {
+impl<S: KvStore + 'static> NodeChannelHandler<S> {
     pub fn new(world: Arc<WorldState<S>>, mempool: Arc<Mutex<Mempool>>, require_sig: bool) -> Self {
-        Self { world, mempool, require_sig, confirmations: Mutex::new(HashMap::new()) }
+        Self {
+            world,
+            mempool,
+            require_sig,
+            confirmations: Mutex::new(HashMap::new()),
+            witness: None,
+            commit_out: OnceLock::new(),
+        }
+    }
+
+    /// Configure this node as a witness (SR) that generates PBFT commits with `key`.
+    /// `None` leaves it a non-witness node (never emits commits).
+    pub fn with_witness(mut self, key: Option<SecretKey>) -> Self {
+        self.witness = key.map(|k| {
+            let address = address_from_public_key(&public_key(&k)).as_bytes().to_vec();
+            WitnessCommitter { key: k, address }
+        });
+        self
+    }
+
+    /// Inject the broadcast handle (call once, right after `ChannelService::new`).
+    pub fn set_commit_handle(&self, handle: ChannelHandle) {
+        let _ = self.commit_out.set(handle);
+    }
+
+    /// Generate, self-record, and broadcast this node's PBFT commit for a block it
+    /// accepted or produced (T09). No-op unless this node is a witness whose address is
+    /// in the active SR set **and** `allow_pbft` is on — so only SRs emit, and nothing
+    /// is signed while PBFT is committee-disabled.
+    ///
+    /// Deviation vs java-tron: the two-phase prepare→commit is collapsed to a single
+    /// commit round here; view-change / epoch handling is out of scope.
+    pub fn emit_commit(&self, block_num: i64, block_id: [u8; 32]) {
+        let Some(w) = self.witness.as_ref() else { return };
+        if self.world.get_prop_i64(props::ALLOW_PBFT).unwrap_or(0) != 1 {
+            return;
+        }
+        let active = match self.world.get_active_witnesses() {
+            Ok(a) => a,
+            Err(_) => return,
+        };
+        if !active.iter().any(|a| a == &w.address) {
+            return; // only active SRs emit commits
+        }
+        let digest = PbftCommit::digest(block_num, &block_id);
+        let sig = match sign_digest(&w.key, &digest) {
+            Ok(s) => s,
+            Err(_) => return,
+        };
+        let mut signature = [0u8; 65];
+        signature[..64].copy_from_slice(&sig.rs);
+        signature[64] = 27 + sig.recovery_id;
+        let bytes = PbftCommit { block_num, block_id, signature }.encode();
+        // Count our own commit through the same accounting (may advance solidified).
+        self.on_pbft_commit(&bytes);
+        // Broadcast to peers so the network reaches quorum.
+        if let Some(handle) = self.commit_out.get() {
+            handle.advertise_pbft_commit(bytes);
+        }
     }
 }
 
@@ -59,7 +132,19 @@ impl<S: KvStore + 'static> ChannelHandler for NodeChannelHandler<S> {
             self.require_sig,
             gate,
         ) {
-            Ok(applied) if applied >= 1 => Some(self.head()),
+            Ok(applied) if applied >= 1 => {
+                // The intake gate already proved this block's producer is an active
+                // witness, so if we are an SR we sign + broadcast our commit for it (T09).
+                if let Ok(block) = tron_proto::protocol::Block::decode(block_bytes) {
+                    if let (Some(raw), Some(id)) = (
+                        block.block_header.as_ref().and_then(|h| h.raw_data.as_ref()),
+                        tron_chain::block_id_of(&block),
+                    ) {
+                        self.emit_commit(raw.number, id.0);
+                    }
+                }
+                Some(self.head())
+            }
             _ => None,
         }
     }
@@ -382,5 +467,169 @@ mod tests {
             assert!(h.on_pbft_commit(&commit(1, BID, k)));
         }
         assert_eq!(world.get_solidified_block().unwrap(), 2);
+    }
+
+    // -- PBFT commit GENERATION + broadcast (T09) -------------------------
+
+    /// A witness node at head 1 (block 1 applied through the gate), allow_pbft on,
+    /// configured to sign with `key`.
+    fn witness_node(
+        active: &[Address],
+        block1: &protocol::Block,
+        key: SecretKey,
+    ) -> (Arc<NodeChannelHandler<MemoryStore>>, Arc<WorldState<MemoryStore>>) {
+        let world = Arc::new(WorldState::new(MemoryStore::new()));
+        world.put_block(&genesis()).unwrap();
+        world.put_active_witnesses(active).unwrap();
+        world.put_prop_i64(props::ALLOW_PBFT, 1).unwrap();
+        let a = world.get_active_witnesses().unwrap();
+        crate::sync::apply_synced_blocks_gated(&world, &[block1.encode_to_vec()], true, Some(&a))
+            .unwrap();
+        let h = Arc::new(
+            NodeChannelHandler::new(
+                world.clone(),
+                Arc::new(Mutex::new(Mempool::default())),
+                true,
+            )
+            .with_witness(Some(key)),
+        );
+        (h, world)
+    }
+
+    #[test]
+    fn on_block_emits_self_commit_and_sole_sr_solidifies() {
+        // Sole SR (threshold 1): accepting block 1 via on_block signs our commit and
+        // self-records it, immediately solidifying the block — no peers needed.
+        let k = sr_key(1);
+        let world = Arc::new(WorldState::new(MemoryStore::new()));
+        world.put_block(&genesis()).unwrap();
+        world.put_active_witnesses(&[sr_addr(&k)]).unwrap();
+        world.put_prop_i64(props::ALLOW_PBFT, 1).unwrap();
+        let h = Arc::new(
+            NodeChannelHandler::new(world.clone(), Arc::new(Mutex::new(Mempool::default())), true)
+                .with_witness(Some(k.clone())),
+        );
+        let block1 = produce_block(&genesis(), &k, 3000, vec![], 30);
+        assert_eq!(h.on_block(&block1.encode_to_vec()), Some(1));
+        assert_eq!(world.get_solidified_block().unwrap(), 1);
+    }
+
+    #[test]
+    fn non_witness_node_does_not_emit_commit() {
+        // Same sole-SR state, but this handler has no witness key -> emit is a no-op,
+        // so nothing is self-recorded and finality never advances.
+        let k = sr_key(1);
+        let world = Arc::new(WorldState::new(MemoryStore::new()));
+        world.put_block(&genesis()).unwrap();
+        world.put_active_witnesses(&[sr_addr(&k)]).unwrap();
+        world.put_prop_i64(props::ALLOW_PBFT, 1).unwrap();
+        let h = Arc::new(NodeChannelHandler::new(
+            world.clone(),
+            Arc::new(Mutex::new(Mempool::default())),
+            true,
+        ));
+        h.emit_commit(1, BID);
+        assert_eq!(world.get_solidified_block().unwrap(), 0);
+    }
+
+    /// 3 in-process witness nodes over the real TCP channel (line topology a<-b<-c):
+    /// each emits its commit for block 1; commits circulate (advertise -> peer
+    /// on_pbft_commit -> re-advertise) until all 3 distinct SR commits reach every
+    /// node, and every node's persisted solidified block advances to 1 (threshold 3).
+    #[tokio::test]
+    async fn three_witness_nodes_reach_quorum_solidified_over_channel() {
+        let (k1, k2, k3) = (sr_key(1), sr_key(2), sr_key(3));
+        let active = vec![sr_addr(&k1), sr_addr(&k2), sr_addr(&k3)];
+        let block1 = produce_block(&genesis(), &k1, 3000, vec![], 30);
+        let id = tron_chain::block_id_of(&block1).unwrap().0;
+
+        let (ha, wa) = witness_node(&active, &block1, k1.clone());
+        let (hb, wb) = witness_node(&active, &block1, k2.clone());
+        let (hc, wc) = witness_node(&active, &block1, k3.clone());
+
+        let cfg =
+            || ChannelConfig { keepalive: Duration::from_millis(50), hello: b"node".to_vec() };
+        let (sa, adva) = ChannelService::new(ha.clone(), cfg());
+        let (sb, advb) = ChannelService::new(hb.clone(), cfg());
+        let (sc, advc) = ChannelService::new(hc.clone(), cfg());
+        ha.set_commit_handle(adva.clone());
+        hb.set_commit_handle(advb.clone());
+        hc.set_commit_handle(advc.clone());
+
+        let la = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let a_addr = la.local_addr().unwrap();
+        let lb = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let b_addr = lb.local_addr().unwrap();
+        let lc = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+
+        let token = tokio_util::sync::CancellationToken::new();
+        tokio::spawn(sa.run(la, vec![], token.clone()));
+        tokio::spawn(sb.run(lb, vec![a_addr], token.clone()));
+        tokio::spawn(sc.run(lc, vec![b_addr], token.clone()));
+
+        assert!(
+            wait_until(3000, || adva.live_peers() >= 1
+                && advb.live_peers() >= 2
+                && advc.live_peers() >= 1)
+            .await,
+            "nodes never connected"
+        );
+
+        ha.emit_commit(1, id);
+        hb.emit_commit(1, id);
+        hc.emit_commit(1, id);
+
+        let ok = wait_until(5000, || {
+            wa.get_solidified_block().unwrap() == 1
+                && wb.get_solidified_block().unwrap() == 1
+                && wc.get_solidified_block().unwrap() == 1
+        })
+        .await;
+        assert!(
+            ok,
+            "not all solidified: a={} b={} c={}",
+            wa.get_solidified_block().unwrap(),
+            wb.get_solidified_block().unwrap(),
+            wc.get_solidified_block().unwrap()
+        );
+        token.cancel();
+    }
+
+    /// Only 2 of the 3 active SRs emit -> quorum (3) is never met, so no node solidifies.
+    #[tokio::test]
+    async fn two_of_three_sr_commits_do_not_solidify() {
+        let (k1, k2, k3) = (sr_key(1), sr_key(2), sr_key(3));
+        let active = vec![sr_addr(&k1), sr_addr(&k2), sr_addr(&k3)]; // threshold 3
+        let block1 = produce_block(&genesis(), &k1, 3000, vec![], 30);
+        let id = tron_chain::block_id_of(&block1).unwrap().0;
+
+        let (ha, wa) = witness_node(&active, &block1, k1.clone());
+        let (hb, wb) = witness_node(&active, &block1, k2.clone());
+
+        let cfg =
+            || ChannelConfig { keepalive: Duration::from_millis(50), hello: b"node".to_vec() };
+        let (sa, adva) = ChannelService::new(ha.clone(), cfg());
+        let (sb, advb) = ChannelService::new(hb.clone(), cfg());
+        ha.set_commit_handle(adva.clone());
+        hb.set_commit_handle(advb.clone());
+
+        let la = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let a_addr = la.local_addr().unwrap();
+        let lb = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+
+        let token = tokio_util::sync::CancellationToken::new();
+        tokio::spawn(sa.run(la, vec![], token.clone()));
+        tokio::spawn(sb.run(lb, vec![a_addr], token.clone()));
+
+        assert!(wait_until(2000, || adva.live_peers() >= 1 && advb.live_peers() >= 1).await);
+
+        ha.emit_commit(1, id);
+        hb.emit_commit(1, id);
+
+        // Give commits time to circulate, then confirm neither node solidified.
+        tokio::time::sleep(Duration::from_millis(700)).await;
+        assert_eq!(wa.get_solidified_block().unwrap(), 0);
+        assert_eq!(wb.get_solidified_block().unwrap(), 0);
+        token.cancel();
     }
 }

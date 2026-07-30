@@ -225,16 +225,23 @@ impl Node {
         //
         // Its advertise handle is captured so the block-production service can gossip
         // locally produced blocks (T07).
+        // Witness key used both to produce blocks and to sign PBFT commits (T09).
+        let witness_key = self.config.witness_secret_key().filter(|_| self.config.witness);
+
         let channel_advertise;
+        let commit_handler;
         {
             let chan_addr: std::net::SocketAddr = ([0, 0, 0, 0], self.config.p2p_port).into();
-            let handler = std::sync::Arc::new(crate::net::NodeChannelHandler::new(
-                state.clone(),
-                mempool.clone(),
-                true,
-            ));
+            let handler = std::sync::Arc::new(
+                crate::net::NodeChannelHandler::new(state.clone(), mempool.clone(), true)
+                    .with_witness(witness_key.clone()),
+            );
+            // Keep an Arc to the same handler so we can inject the broadcast handle and
+            // emit commits from the production loop.
+            commit_handler = handler.clone();
             let (service, advertise) =
                 tron_p2p::service::ChannelService::new(handler, Default::default());
+            commit_handler.set_commit_handle(advertise.clone());
             channel_advertise = advertise;
             let dial: Vec<std::net::SocketAddr> = peers
                 .lock()
@@ -266,7 +273,7 @@ impl Node {
             let prod_state = state.clone();
             let prod_mempool = mempool.clone();
             let advertise = channel_advertise.clone();
-            let witness_key = self.config.witness_secret_key().filter(|_| self.config.witness);
+            let commit_handler = commit_handler.clone();
             handles.push(tokio::spawn(async move {
                 tracing::info!(service = "consensus", producing = witness_key.is_some(), "service started");
                 match witness_key {
@@ -287,6 +294,12 @@ impl Node {
                                         ) {
                                             tracing::info!(number = n, "produced block");
                                             advertise.advertise_block(n);
+                                            // Sign + broadcast our PBFT commit for the
+                                            // block we just produced (T09); no-op unless
+                                            // we're an active SR and allow_pbft is on.
+                                            if let Some(id) = tron_chain::block_id_of(&block) {
+                                                commit_handler.emit_commit(n, id.0);
+                                            }
                                         }
                                     }
                                 }

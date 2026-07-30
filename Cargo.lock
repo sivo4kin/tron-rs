@@ -2013,6 +2013,7 @@ dependencies = [
  "toml",
  "tracing",
  "tracing-subscriber",
+ "tron-chain",
  "tron-consensus",
  "tron-crypto",
  "tron-p2p",
