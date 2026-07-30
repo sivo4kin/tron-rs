@@ -42,6 +42,12 @@ pub trait ChannelHandler: Send + Sync + 'static {
     fn on_transaction(&self, tx_bytes: &[u8]);
     /// Encoded block for `number`, if we have it (to serve `FetchInvData`).
     fn block_bytes(&self, number: i64) -> Option<Vec<u8>>;
+    /// Verify + account for an inbound PBFT commit (T08). Returns `true` if it was
+    /// **newly accepted** (so the service re-broadcasts it), `false` if dropped or a
+    /// duplicate. Default: ignore (nodes that don't track finality).
+    fn on_pbft_commit(&self, _commit_bytes: &[u8]) -> bool {
+        false
+    }
 }
 
 /// One gossip event fanned out to every live peer task.
@@ -49,6 +55,8 @@ pub trait ChannelHandler: Send + Sync + 'static {
 enum Advertise {
     Block(i64),
     Tx(Arc<Vec<u8>>),
+    /// A whole PBFT commit message, pushed to every peer.
+    PbftCommit(Arc<Vec<u8>>),
 }
 
 /// A cloneable handle to advertise inventory to all connected peers.
@@ -66,6 +74,12 @@ impl ChannelHandle {
     /// Gossip a new transaction (pushed whole) to all peers.
     pub fn advertise_tx(&self, tx_bytes: Vec<u8>) {
         let _ = self.adv_tx.send(Advertise::Tx(Arc::new(tx_bytes)));
+    }
+
+    /// Gossip a PBFT commit (pushed whole) to all peers — used by T09 producers and
+    /// to re-broadcast newly-accepted inbound commits.
+    pub fn advertise_pbft_commit(&self, commit_bytes: Vec<u8>) {
+        let _ = self.adv_tx.send(Advertise::PbftCommit(Arc::new(commit_bytes)));
     }
 
     /// Number of live peer tasks currently subscribed (for tests / metrics).
@@ -202,6 +216,12 @@ async fn handle_peer<H: ChannelHandler>(
                         break Ok(());
                     }
                 }
+                Ok(Advertise::PbftCommit(bytes)) => {
+                    let frame = Frame::new(MessageType::PbftCommit, (*bytes).clone());
+                    if write_frame(&mut writer, &frame).await.is_err() {
+                        break Ok(());
+                    }
+                }
                 Err(broadcast::error::RecvError::Lagged(_)) => {}
                 Err(broadcast::error::RecvError::Closed) => break Ok(()),
             },
@@ -260,6 +280,13 @@ where
             }
         }
         MessageType::Trx => handler.on_transaction(&frame.payload),
+        MessageType::PbftCommit => {
+            // Verify + account; re-broadcast only newly-accepted commits (gossip),
+            // so a duplicate or dropped commit does not loop around the network.
+            if !frame.payload.is_empty() && handler.on_pbft_commit(&frame.payload) {
+                handle.advertise_pbft_commit(frame.payload.clone());
+            }
+        }
         _ => {}
     }
     Ok(())

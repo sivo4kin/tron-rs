@@ -81,6 +81,11 @@ pub mod props {
     /// 21-byte addresses (java-tron `getActiveWitnesses`). `KvStore` has no
     /// iteration, so the set is materialised explicitly rather than scanned.
     pub const ACTIVE_WITNESSES: &str = "ACTIVE_WITNESSES";
+    /// Highest irreversible (solidified) block number — advanced by PBFT finality
+    /// (java-tron `getLatestSolidifiedBlockNum`). 0 until finality begins.
+    pub const LATEST_SOLIDIFIED_BLOCK: &str = "LATEST_SOLIDIFIED_BLOCK";
+    /// PBFT finality feature gate (java-tron `allowPBFT`); off (0) by default.
+    pub const ALLOW_PBFT: &str = "ALLOW_PBFT";
 }
 
 #[derive(Debug, Error)]
@@ -297,6 +302,18 @@ impl<S: KvStore> WorldState<S> {
         self.db
             .put(cf::DYNAMIC_PROPERTIES, props::ACTIVE_WITNESSES.as_bytes(), &buf)
             .map_err(Into::into)
+    }
+
+    // -- PBFT solidified (irreversible) block ----------------------------
+
+    /// The highest irreversible (solidified) block number; 0 until finality begins.
+    pub fn get_solidified_block(&self) -> Result<i64, StateError> {
+        self.get_prop_i64(props::LATEST_SOLIDIFIED_BLOCK)
+    }
+
+    /// Persist the highest irreversible (solidified) block number (advanced by PBFT).
+    pub fn put_solidified_block(&self, number: i64) -> Result<(), StateError> {
+        self.put_prop_i64(props::LATEST_SOLIDIFIED_BLOCK, number)
     }
 }
 

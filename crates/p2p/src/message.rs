@@ -20,6 +20,8 @@ pub enum MessageType {
     FetchBlockHeaders = 0x11,
     BlockInventory = 0x12,
     TrxInventory = 0x13,
+    /// PBFT commit (block finality attestation) — T08.
+    PbftCommit = 0x14,
     P2pHello = 0x20,
     P2pDisconnect = 0x21,
     P2pPing = 0x22,
@@ -42,6 +44,7 @@ impl MessageType {
             0x11 => FetchBlockHeaders,
             0x12 => BlockInventory,
             0x13 => TrxInventory,
+            0x14 => PbftCommit,
             0x20 => P2pHello,
             0x21 => P2pDisconnect,
             0x22 => P2pPing,

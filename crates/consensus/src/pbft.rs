@@ -7,6 +7,64 @@
 
 use crate::MAX_ACTIVE_WITNESSES;
 use std::collections::HashMap;
+use tron_types::Address;
+
+/// A PBFT commit message on the wire (T08). Compact fixed-layout encoding — **not**
+/// java-tron's `PbftMessage` protobuf — of `block_num ‖ block_id ‖ signature`:
+/// an SR's attestation that block `block_num` (id `block_id`) should be committed.
+/// The signature is over [`PbftCommit::digest`]; a quorum of distinct-SR commits
+/// finalizes the block. 105 bytes: 8 (i64 BE) + 32 (block id) + 65 (r‖s‖v).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PbftCommit {
+    pub block_num: i64,
+    pub block_id: [u8; 32],
+    pub signature: [u8; 65],
+}
+
+impl PbftCommit {
+    /// Serialized length of a commit message.
+    pub const ENCODED_LEN: usize = 8 + 32 + 65;
+
+    /// The digest an SR signs to attest a block: `sha256(block_num_be ‖ block_id)`.
+    pub fn digest(block_num: i64, block_id: &[u8; 32]) -> [u8; 32] {
+        let mut buf = [0u8; 40];
+        buf[..8].copy_from_slice(&block_num.to_be_bytes());
+        buf[8..].copy_from_slice(block_id);
+        tron_crypto::sha256(&buf)
+    }
+
+    pub fn encode(&self) -> Vec<u8> {
+        let mut b = Vec::with_capacity(Self::ENCODED_LEN);
+        b.extend_from_slice(&self.block_num.to_be_bytes());
+        b.extend_from_slice(&self.block_id);
+        b.extend_from_slice(&self.signature);
+        b
+    }
+
+    pub fn decode(bytes: &[u8]) -> Option<Self> {
+        if bytes.len() != Self::ENCODED_LEN {
+            return None;
+        }
+        Some(Self {
+            block_num: i64::from_be_bytes(bytes[..8].try_into().ok()?),
+            block_id: bytes[8..40].try_into().ok()?,
+            signature: bytes[40..105].try_into().ok()?,
+        })
+    }
+
+    /// Recover the 21-byte SR address that signed this commit (`None` on a malformed
+    /// signature). The caller must still check membership in the active-witness set.
+    pub fn recover_signer(&self) -> Option<Address> {
+        let digest = Self::digest(self.block_num, &self.block_id);
+        let mut rs = [0u8; 64];
+        rs.copy_from_slice(&self.signature[..64]);
+        let v = self.signature[64];
+        let recovery_id = if v >= 27 { v - 27 } else { v };
+        let pk = tron_crypto::recover(&digest, &tron_crypto::RecoverableSignature { rs, recovery_id })
+            .ok()?;
+        Some(tron_crypto::address_from_public_key(&pk))
+    }
+}
 
 /// The minimum confirmations for finality: strictly more than 2/3 of `total` SRs,
 /// i.e. `floor(2*total/3) + 1` (java-tron `SolidNode` / PBFT quorum).
@@ -99,6 +157,27 @@ pub fn record_confirmation(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn commit_encodes_roundtrips_and_recovers_signer() {
+        use tron_crypto::{address_from_public_key, public_key, sign_digest, SecretKey};
+        let sk = SecretKey::from_slice(&[0x55u8; 32]).unwrap();
+        let block_id = [0x9au8; 32];
+        let digest = PbftCommit::digest(42, &block_id);
+        let sig = sign_digest(&sk, &digest).unwrap();
+        let mut signature = [0u8; 65];
+        signature[..64].copy_from_slice(&sig.rs);
+        signature[64] = 27 + sig.recovery_id;
+        let commit = PbftCommit { block_num: 42, block_id, signature };
+
+        let bytes = commit.encode();
+        assert_eq!(bytes.len(), PbftCommit::ENCODED_LEN);
+        assert_eq!(PbftCommit::decode(&bytes), Some(commit.clone()));
+        // Wrong length decodes to None.
+        assert_eq!(PbftCommit::decode(&bytes[..104]), None);
+        // The recovered signer is the signing SR.
+        assert_eq!(commit.recover_signer(), Some(address_from_public_key(&public_key(&sk))));
+    }
 
     #[test]
     fn threshold_is_two_thirds_plus_one() {
